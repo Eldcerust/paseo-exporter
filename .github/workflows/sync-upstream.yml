@@ -1,0 +1,79 @@
+# Keeps this fork's main current with sgoley/paseo-exporter.
+#
+# Merges upstream main into this fork's main, checks that the result typechecks and its tests pass
+# on a clean runner, and pushes only if they do. A conflict or a check failure fails the run, so
+# nothing is pushed.
+#
+# Limits:
+# - A merge conflict needs a manual merge and push.
+# - GitHub turns scheduled workflows off after 60 days without repository activity.
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "27 */12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'Eldcerust/paseo-exporter-fork'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream main
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/sgoley/paseo-exporter.git
+          git fetch --quiet upstream main
+          behind=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          if [ "$behind" = "0" ]; then
+            echo "Already up to date with upstream main."
+            exit 0
+          fi
+          echo "$behind upstream commits to merge:"
+          git log --oneline HEAD..upstream/main
+          if ! git merge --no-edit upstream/main; then
+            echo "::error::Merge conflict in: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+            git merge --abort
+            exit 1
+          fi
+
+      - name: Set up Node
+        if: steps.merge.outputs.behind != '0'
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.merge.outputs.behind != '0'
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck the merged result
+        if: steps.merge.outputs.behind != '0'
+        run: npm run typecheck
+
+      - name: Test the merged result
+        if: steps.merge.outputs.behind != '0'
+        run: npm test
+
+      - name: Push
+        if: steps.merge.outputs.behind != '0'
+        run: git push origin HEAD:main
