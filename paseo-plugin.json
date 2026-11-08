@@ -1,7 +1,7 @@
 {
-  "id": "exporter-hub",
-  "name": "Conversation exporter (Pill hub)",
-  "description": "Export conversations as Markdown or JSON to your clipboard or a host folder.",
+  "id": "paseo-exporter-fork",
+  "name": "Conversation exporter (fork)",
+  "description": "Your fork of sgoley's Conversation exporter, which exports conversations as Markdown or JSON to your clipboard or a host folder. Its Export pill can move into the Pill hub's Tools pill.",
   "requirements": {
     "paseo": ">=0.13.0-beta.1"
   }
