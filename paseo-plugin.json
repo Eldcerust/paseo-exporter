@@ -1,4 +1,4 @@
-﻿{
+{
     "id":  "paseo-exporter-fork",
     "name":  "Conversation exporter",
     "description":  "Your fork of sgoley\u0027s Conversation exporter, which exports conversations as Markdown or JSON to your clipboard or a host folder. Its Export pill can move into the Pill hub\u0027s Tools pill.",
