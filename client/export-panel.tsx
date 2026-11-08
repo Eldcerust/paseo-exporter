@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { useMutation } from "@tanstack/react-query";
-import { type PluginAgentPanelProps, type PluginButtonContentProps, useAgent, useRpc, useSettings, useWorkspace } from "@getpaseo/plugin/client";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { type PluginAgentPanelProps, type PluginButtonContentProps, useAgent, useSettings, useWorkspace } from "@getpaseo/plugin/client";
 import { copyText, Markdown, TextInput } from "@getpaseo/plugin/client/ui";
-import { defaultsSchema, preferences, resolveDefaults, type ExportDefaults } from "../shared/preferences";
+import { useHostedClient, useRpc } from "./hub-compat";
+import { defaultsSchema, preferences, readPreferences, resolveDefaults, type ExportDefaults } from "../shared/preferences";
 import { exportSession, saveExport, type ExportOptions, type ExportFormat } from "../shared/export";
 
 type Destination = "clipboard" | "exports" | "session" | "custom";
@@ -18,6 +19,23 @@ export function ExportPanel(props: PluginAgentPanelProps) {
 }
 type FormProps = PluginAgentPanelProps & { popover?: boolean; onOpenPreview?: () => void };
 function ExportForm(props: FormProps) {
+  return useHostedClient() ? <HostedDefaults {...props} /> : <LiveDefaults {...props} />;
+}
+// Settings belong to the plugin that owns them, so inside the Pill hub this form cannot use
+// them. It reads the saved defaults through a backend call and sends changes to the full panel.
+function HostedDefaults(props: FormProps) {
+  const read = useRpc(readPreferences);
+  const saved = useQuery({ queryKey: ["export-preferences", props.host.id], queryFn: () => read({}), staleTime: 0 });
+  if (!saved.data) return <View style={{ padding: 12, gap: 8 }}>
+    <Text style={{ color: props.theme.colors.foreground }}>{saved.isError ? saved.error.message : "Loading export defaults…"}</Text>
+    {saved.isError && <Pressable accessibilityRole="button" onPress={() => void saved.refetch()}><Text style={{ color: props.theme.colors.foreground }}>Retry</Text></Pressable>}
+  </View>;
+  return <SessionExport key={`${props.host.id}:${props.workspaceId}:${props.agentId}`} {...props}
+    initialDefaults={resolveDefaults(saved.data, props.workspaceId)}
+    hasWorkspaceDefaults={Object.hasOwn(saved.data.workspaces, props.workspaceId)}
+    saveDefaults={async () => { throw new Error("Open the full panel to change saved defaults."); }} />;
+}
+function LiveDefaults(props: FormProps) {
   const settings = useSettings(preferences);
   if (settings.status !== "ready") return <View style={{ padding: 12, gap: 8 }}>
     <Text style={{ color: props.theme.colors.foreground }}>{settings.status === "loading" ? "Loading export defaults…" : settings.error}</Text>

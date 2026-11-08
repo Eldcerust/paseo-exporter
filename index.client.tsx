@@ -1,5 +1,6 @@
 import type { PluginClientContext, PluginButtonRegistration, PluginButtonContentProps } from "@getpaseo/plugin/client";
 import { ExportPanel, ExportPopover } from "./client/export-panel";
+import { registerComposerPill } from "./client/hub-compat";
 
 export default function contribute(client: PluginClientContext) {
   client.addWorkspacePanel({ id: "export", title: "Export conversation", icon: "FileDown", context: "agent", Component: ExportPanel });
@@ -28,8 +29,9 @@ export default function contribute(client: PluginClientContext) {
         client.openPanel("export", { workspaceId, agentId });
       }} />;
     }
-    pills.set(agentId, client.addComposerPill({
-      id: "export", agentId, workspaceId,
+    // Follows the Pill hub when one is running; otherwise it is the Export pill it always was.
+    pills.set(agentId, registerComposerPill(client, {
+      toolId: "export", agentId, workspaceId,
       button: { title: "Export conversation", label: "Export", icon: "FileDown", behavior: {
         kind: "popover", Content: Popover,
       } },
