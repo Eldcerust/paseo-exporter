@@ -1,4 +1,4 @@
-import { defineSettings } from "@getpaseo/plugin";
+import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 import { exportFormat, exportOptions } from "./export";
 
@@ -23,6 +23,13 @@ export const preferences = defineSettings({
   }),
 });
 export type Preferences = z.infer<typeof preferences.schema>;
+// The Pill hub shows the export form outside this plugin's own settings scope, so it reads the
+// saved defaults through the backend instead of useSettings.
+export const readPreferences = defineRpc({
+  name: "preferences.read",
+  input: z.object({}),
+  output: preferences.schema,
+});
 export function resolveDefaults(values: Preferences, workspaceId: string): ExportDefaults {
   return values.workspaces[workspaceId] ?? values.defaults;
 }
