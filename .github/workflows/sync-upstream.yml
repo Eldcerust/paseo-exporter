@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   sync:
-    if: github.repository == 'Eldcerust/paseo-exporter-fork'
+    if: github.repository == 'Eldcerust/paseo-exporter'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

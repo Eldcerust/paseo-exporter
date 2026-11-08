@@ -1,8 +1,8 @@
-{
-  "id": "paseo-exporter-fork",
-  "name": "Conversation exporter (fork)",
-  "description": "Your fork of sgoley's Conversation exporter, which exports conversations as Markdown or JSON to your clipboard or a host folder. Its Export pill can move into the Pill hub's Tools pill.",
-  "requirements": {
-    "paseo": ">=0.13.0-beta.1"
-  }
+﻿{
+    "id":  "paseo-exporter-fork",
+    "name":  "Conversation exporter",
+    "description":  "Your fork of sgoley\u0027s Conversation exporter, which exports conversations as Markdown or JSON to your clipboard or a host folder. Its Export pill can move into the Pill hub\u0027s Tools pill.",
+    "requirements":  {
+                         "paseo":  "\u003e=0.13.0-beta.1"
+                     }
 }
