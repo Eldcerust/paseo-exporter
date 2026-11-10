@@ -4,14 +4,14 @@ import { registerComposerPill } from "./client/hub-compat";
 import { ArchiveScreen, ArchiveSidebarItem } from "./client/archive-screen";
 
 export default function contribute(client: PluginClientContext) {
-  client.addScreen({ id: "archive", title: "Archive", Component: ArchiveScreen });
-  client.addSidebarFooterItem({ id: "archive", title: "Archive", Component: ArchiveSidebarItem });
+  client.addScreen({ id: "archive", title: "Archived chats", Component: ArchiveScreen });
+  client.addSidebarHeaderItem({ id: "archived-chats", title: "Archived chats", Component: ArchiveSidebarItem });
   client.addCommandCenterItem({
     id: "archive-session", title: "Save export and archive conversation", icon: "Archive", context: "agent",
     keywords: ["archive", "backup", "history"], onSelect: ({ openPanel }) => openPanel("export"),
   });
   client.addCommandCenterItem({
-    id: "open-archive", title: "Open archived conversations", icon: "ArchiveRestore", context: "global",
+    id: "open-archive", title: "Open archived chats", icon: "ArchiveRestore", context: "global",
     keywords: ["archive", "restore", "history"], onSelect: ({ openScreen }) => openScreen({ screenId: "archive" }),
   });
   client.addSlashCommand({ name: "archive", description: "Open Export to save and archive this chat", argumentHint: "", context: "agent", onSubmit: ({ openPanel }) => openPanel("export") });

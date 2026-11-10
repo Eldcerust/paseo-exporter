@@ -25,7 +25,7 @@ export function createArchiveService(readPreferences: () => Promise<Preferences>
       const handle = context.paseo.agents.ref(agentId);
       const snapshot = await handle.refresh();
       if (!snapshot?.agent) throw new Error("Chat was not found on this host.");
-      if (snapshot.agent.archivedAt) throw new Error("This chat is already archived. Find it in Archive in the sidebar.");
+      if (snapshot.agent.archivedAt) throw new Error("This chat is already archived. Open Archived chats in the sidebar to restore it.");
       requireInactive(snapshot.agent);
       const defaults = resolveDefaults(await readPreferences(), snapshot.agent.workspaceId ?? "");
       if (defaults.destination === "clipboard") {

@@ -1,7 +1,7 @@
 {
     "id":  "paseo-exporter-fork",
     "name":  "Conversation exporter",
-    "description":  "Your fork of sgoley's Conversation exporter. Archive inside Export using saved defaults, then restore original sessions from Archive in the sidebar. The Export tool can join the Pill hub.",
+    "description":  "Your fork of sgoley's Conversation exporter. Archive inside Export using saved defaults, then restore original sessions from Archived chats in the main sidebar. The Export tool can join the Pill hub.",
     "requirements":  {
                          "paseo":  ">=0.15.3"
                      }

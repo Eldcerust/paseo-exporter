@@ -147,13 +147,13 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reasoning: {initialDefaults.options.includeReasoning ? "on" : "off"} · Tools: {initialDefaults.options.includeTools ? "on" : "off"} · Timestamps: {initialDefaults.options.includeTimestamps ? "on" : "off"}</Text>
       {running && <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Wait for the current turn to finish or stop it before archiving.</Text>}
       {initialDefaults.destination === "clipboard" && <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Archive requires a file. Choose a folder above and save it under Defaults first.</Text>}
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>If saving fails, this chat stays active. Restore it later from Archive in the sidebar. Paseo may also archive managed child chats; their histories are not included in this export.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>If saving fails, this chat stays active. Restore it later from Archived chats in the main sidebar. Paseo may also archive managed child chats; their histories are not included in this export.</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {action(archiving.isPending ? "Saving and archiving…" : archiving.isSuccess ? "Archived" : "Save export and archive", () => archiving.mutate(), busy || running || initialDefaults.destination === "clipboard" || archiving.isSuccess, true)}
         {action("Cancel", () => setShowArchive(false))}
       </View>
       {archiving.error && <Text accessibilityRole="alert" selectable style={text}>{archiving.error.message}</Text>}
-      {archiving.data && <Text accessibilityLiveRegion="polite" selectable style={text}>Saved to {archiving.data.path}. Find this chat in Archive to restore it.</Text>}
+      {archiving.data && <Text accessibilityLiveRegion="polite" selectable style={text}>Saved to {archiving.data.path}. Open Archived chats in the sidebar to restore this chat.</Text>}
     </View>}
     <Pressable accessibilityRole="button" accessibilityState={{ expanded: showDefaults }} onPress={() => setShowDefaults(!showDefaults)} style={{ paddingVertical: 4 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{showDefaults ? "▾" : "▸"} Defaults · {hasWorkspaceDefaults ? "workspace" : "host"}</Text>

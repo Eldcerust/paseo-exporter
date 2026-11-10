@@ -11,6 +11,19 @@ type Props = Record<string, any>;
 type Element = { type: string | ((props: Props) => unknown); props: Props };
 const jsx = (type: Element["type"], props: Props) => ({ type, props });
 const runtime = { jsx, jsxs: jsx };
+function expand(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(expand);
+  if (!node || typeof node !== "object") return node;
+  const element = node as Element;
+  if (typeof element.type === "function") return expand(element.type(element.props));
+  return { ...element, props: { ...element.props, children: expand(element.props.children) } };
+}
+function elements(node: unknown): Element[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node || typeof node !== "object") return [];
+  const element = node as Element;
+  return [element, ...elements(element.props.children)];
+}
 async function loadClient(path: string, dependencies: Record<string, unknown>) {
   const source = await readFile(path, "utf8");
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 } });
@@ -24,8 +37,8 @@ async function loadClient(path: string, dependencies: Record<string, unknown>) {
   return exports;
 }
 
-test("the exporter contributes one Export tool and panel, with Archive only in the sidebar", async () => {
-  const contributed: Record<string, Props[]> = { panels: [], screens: [], sidebar: [], commands: [], slash: [], pills: [] };
+test("the exporter contributes one Export tool and a discoverable Archived chats entry in the main sidebar", async () => {
+  const contributed: Record<string, Props[]> = { panels: [], screens: [], header: [], footer: [], commands: [], slash: [], pills: [] };
   const add = (kind: string) => (value: Props) => { contributed[kind].push(value); return () => {}; };
   const module = await loadClient("index.client.tsx", {
     "./client/export-panel": { ExportPanel: () => null, ExportPopover: () => null },
@@ -33,7 +46,7 @@ test("the exporter contributes one Export tool and panel, with Archive only in t
     "./client/hub-compat": { registerComposerPill: (_client: unknown, spec: Props) => { contributed.pills.push(spec); return { remove() {} }; } },
   });
   const cleanup = module.default({
-    addWorkspacePanel: add("panels"), addScreen: add("screens"), addSidebarFooterItem: add("sidebar"),
+    addWorkspacePanel: add("panels"), addScreen: add("screens"), addSidebarHeaderItem: add("header"), addSidebarFooterItem: add("footer"),
     addCommandCenterItem: add("commands"), addSlashCommand: add("slash"),
     paseo: { agents: { list: async () => ({ subscription: {
       subscribe: ({ snapshot }: Props) => snapshot({ entries: [{ agent: { id: "chat", workspaceId: "workspace" } }] }),
@@ -43,7 +56,8 @@ test("the exporter contributes one Export tool and panel, with Archive only in t
   await Promise.resolve();
   assert.deepEqual(contributed.pills.map((entry) => entry.toolId), ["export"]);
   assert.deepEqual(contributed.panels.map((entry) => entry.id), ["export"]);
-  assert.deepEqual(contributed.sidebar.map((entry) => entry.id), ["archive"]);
+  assert.deepEqual(contributed.header.map((entry) => ({ id: entry.id, title: entry.title })), [{ id: "archived-chats", title: "Archived chats" }]);
+  assert.deepEqual(contributed.footer, [], "the restore entry must not be hidden below the workspace list");
   assert.deepEqual(contributed.screens.map((entry) => entry.id), ["archive"]);
   const opened: string[] = [];
   contributed.slash.find((entry) => entry.name === "archive")!.onSubmit({ openPanel: (id: string) => opened.push(id) });
@@ -103,13 +117,6 @@ async function exportHarness({ hosted = false, destination = "exports", status =
     },
     "../shared/preferences": settings, "../shared/export": contracts, "../shared/archive": archiveContracts,
   });
-  function expand(node: unknown): unknown {
-    if (Array.isArray(node)) return node.map(expand);
-    if (!node || typeof node !== "object") return node;
-    const element = node as Element;
-    if (typeof element.type === "function") return expand(element.type(element.props));
-    return { ...element, props: { ...element.props, children: expand(element.props.children) } };
-  }
   function render(compact = false, panel = false) {
     stateIndex = mutationIndex = 0;
     return expand(module[panel ? "ExportPanel" : "ExportPopover"]({
@@ -117,12 +124,6 @@ async function exportHarness({ hosted = false, destination = "exports", status =
       layout: { compact }, theme: { colors: { foreground: "text", foregroundMuted: "muted", accent: "accent", accentForeground: "contrast", surface0: "base", surface1: "raised" } },
       close: () => { closed = true; }, onOpenPreview() {},
     }));
-  }
-  function elements(node: unknown): Element[] {
-    if (Array.isArray(node)) return node.flatMap(elements);
-    if (!node || typeof node !== "object") return [];
-    const element = node as Element;
-    return [element, ...elements(element.props.children)];
   }
   function button(tree: unknown, label: string) {
     const match = elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === label);
@@ -173,4 +174,47 @@ test("inline archive retains the export popover and displays failures", async ()
   await ui.button(ui.render(), "Save export and archive").onPress();
   assert.equal(ui.isClosed(), false);
   assert.ok(ui.elements(ui.render()).some((entry) => entry.props.accessibilityRole === "alert" && entry.props.children === "Folder is not writable"));
+});
+
+test("the Archived chats sidebar link opens the restore screen and its buttons restore the selected original chat", async () => {
+  for (const open of [false, true]) {
+    const record = { id: "original-chat", title: "Test archived chat", provider: "codex", model: "test", cwd: "project", archivedAt: "2026-11-10T00:00:00Z" };
+    const requests: { method: string; input: unknown }[] = [];
+    const openedScreens: unknown[] = [];
+    const openedAgents: unknown[] = [];
+    let mutationDone: Promise<void> | undefined;
+    const module = await loadClient("client/archive-screen.tsx", {
+      react: { useState: (initial: unknown) => [initial, () => {}] },
+      "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
+      "@getpaseo/plugin/client/ui": { SidebarRow: "SidebarRow", TextInput: "TextInput" },
+      "@getpaseo/plugin/client": { useRpc: (contract: Props) => async (input: Props) => {
+        requests.push({ method: contract.name, input });
+        return contract.name === "archive.restore" ? { agentId: input.agentId } : { entries: [record] };
+      } },
+      "@tanstack/react-query": {
+        useQuery: (config: Props) => ({ data: { entries: [record] }, refetch: config.queryFn }),
+        useMutation: (config: Props) => ({ isPending: false, mutate: (input: Props) => {
+          mutationDone = (async () => { const result = await config.mutationFn(input); await config.onSuccess(result, input); })();
+        } }),
+      },
+      "../shared/archive": archiveContracts,
+    });
+    const sidebar = module.ArchiveSidebarItem({ currentScreen: null, openScreen: (input: unknown) => openedScreens.push(input) }) as Element;
+    assert.equal(sidebar.props.label, "Archived chats");
+    sidebar.props.onPress();
+    assert.deepEqual(openedScreens, [{ screenId: "archive" }]);
+    const tree = expand(module.ArchiveScreen({
+      host: { id: "host", label: "Test host" }, layout: { compact: false }, theme: { colors: {} },
+      navigation: { openAgent: (input: unknown) => openedAgents.push(input) },
+    }));
+    const restore = elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === `${open ? "Restore and open" : "Restore"} ${record.title}`);
+    assert.ok(restore, "the archive screen must expose a restore button for the selected chat");
+    restore.props.onPress();
+    await mutationDone;
+    assert.deepEqual(requests, [
+      { method: "archive.restore", input: { agentId: record.id } },
+      { method: "archive.list", input: {} },
+    ]);
+    assert.deepEqual(openedAgents, open ? [{ agentId: record.id }] : []);
+  }
 });

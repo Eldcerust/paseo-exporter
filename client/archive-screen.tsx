@@ -6,7 +6,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { listArchives, restoreArchive } from "../shared/archive";
 
 export function ArchiveSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
-  return <SidebarRow icon="Archive" active={currentScreen?.screenId === "archive"} onPress={() => openScreen({ screenId: "archive" })} />;
+  return <SidebarRow icon="ArchiveRestore" label="Archived chats" active={currentScreen?.screenId === "archive"} onPress={() => openScreen({ screenId: "archive" })} />;
 }
 export function ArchiveScreen(props: PluginScreenProps) {
   // Reset search and pending feedback when the selected host changes.
@@ -33,7 +33,7 @@ function HostArchiveScreen({ theme, host, layout, navigation }: PluginScreenProp
   const needle = search.trim().toLowerCase();
   const entries = (archives.data?.entries ?? []).filter((entry) => [entry.title, entry.id, entry.cwd, entry.provider, entry.model].some((value) => value?.toLowerCase().includes(needle)));
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 24, gap: 16 }}>
-    <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Archive</Text>
+    <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Archived chats</Text>
     <Text style={text}>Archived chats on {host.label}, including chats archived directly in Paseo. Restore reopens the original session; it does not import Markdown or JSON.</Text>
     <Text style={muted}>Open Export and choose Archive to save an export before archiving. /archive and the Command Center also open Export. Archive uses saved workspace defaults first, then host defaults. Change them in Export → Defaults. Files remain where they were saved after restoring.</Text>
     <View style={{ flexDirection: layout.compact ? "column" : "row", gap: 8 }}>

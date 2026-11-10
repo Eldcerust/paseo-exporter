@@ -1,6 +1,6 @@
 # Paseo exporter
 
-Export a session as formatted Markdown or structured JSON using a composer **Export** button, `/export`, or the Command Center. Archive a chat after saving an export with your existing defaults, then restore the original session from **Archive** in the sidebar.
+Export a session as formatted Markdown or structured JSON using a composer **Export** button, `/export`, or the Command Center. Archive a chat after saving an export with your existing defaults, then restore the original session from **Archived chats** in the main sidebar.
 
 ## Use
 
@@ -31,7 +31,7 @@ Full export panel with workspace defaults:
 1. Set your format, folder, and content options in **Export → Defaults**, using **Save for workspace** or **Save for host**. Workspace defaults take precedence.
 2. Open the existing **Export** popup or panel and choose **Archive** next to the Save button. There is no separate Archive composer pill or Pill hub tool. `/archive` and **Save export and archive conversation** in the Command Center also open Export.
 3. Review the inline confirmation and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first.
-4. Open **Archive** in the sidebar to search archived chats on the selected host. Choose **Restore** or **Restore and open**.
+4. Open **Archived chats** in the main sidebar list, alongside History, Search, and Schedules. Search archived chats on the selected host, then choose **Restore** or **Restore and open**. The restore entry is not in the footer below the workspace list. The Command Center action **Open archived chats** opens the same page.
 
 Archive saves the same Markdown or JSON file as Export before calling Paseo's native soft archive. A failed export leaves the chat active. Clipboard defaults are not accepted for Archive: save a folder destination first. If saving succeeds but native archive fails, the error includes the saved file path and the file is retained. Concurrent archive/restore requests for the same chat through this plugin are rejected until the first completes.
 
