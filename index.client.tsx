@@ -2,8 +2,11 @@ import type { PluginClientContext, PluginButtonRegistration, PluginButtonContent
 import { ExportPanel, ExportPopover } from "./client/export-panel";
 import { registerComposerPill } from "./client/hub-compat";
 import { ArchiveScreen, ArchiveSidebarItem } from "./client/archive-screen";
+import { ArchiveImportReceipt } from "./client/archive-import-receipt";
+import { archiveImportReceipt } from "./shared/archive-files";
 
 export default function contribute(client: PluginClientContext) {
+  client.addTimelineRenderer({ kind: "archive-context-import", version: 1, schema: archiveImportReceipt, Component: ArchiveImportReceipt });
   client.addScreen({ id: "archive", title: "Archived chats", Component: ArchiveScreen });
   client.addSidebarHeaderItem({ id: "archived-chats", title: "Archived chats", Component: ArchiveSidebarItem });
   client.addCommandCenterItem({

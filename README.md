@@ -1,6 +1,6 @@
 # Paseo exporter
 
-Export a session as formatted Markdown or structured JSON using a composer **Export** button, `/export`, or the Command Center. Archive a chat after saving an export with your existing defaults, then restore the original session from **Archived chats** in the main sidebar.
+Export a session as formatted Markdown or structured JSON using a composer **Export** button, `/export`, or the Command Center. Archive using your saved defaults, then import the saved file back into a new context-loaded Paseo chat from **Archived chats** in the main sidebar, without requiring the original chat record.
 
 ## Use
 
@@ -31,15 +31,19 @@ Full export panel with workspace defaults:
 1. Set your format, folder, and content options in **Export → Defaults**, using **Save for workspace** or **Save for host**. Workspace defaults take precedence.
 2. Open the existing **Export** popup or panel and choose **Archive** next to the Save button. There is no separate Archive composer pill or Pill hub tool. `/archive` and **Save export and archive conversation** in the Command Center also open Export.
 3. Review the inline confirmation and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first.
-4. Open **Archived chats** in the main sidebar list, alongside History, Search, and Schedules. Search archived chats on the selected host, then choose **Restore** or **Restore and open**. The restore entry is not in the footer below the workspace list. The Command Center action **Open archived chats** opens the same page.
+4. Open **Archived chats** in the main sidebar list, alongside History, Search, and Schedules. **Saved export files** is the default view. Select your Markdown or JSON export, review its preview and provider/model, choose an existing working directory, then select **Restore from file**. The Command Center action **Open archived chats** opens the same page.
 
 Archive saves the same Markdown or JSON file as Export before calling Paseo's native soft archive. A failed export leaves the chat active. Clipboard defaults are not accepted for Archive: save a folder destination first. If saving succeeds but native archive fails, the error includes the saved file path and the file is retained. Concurrent archive/restore requests for the same chat through this plugin are rejected until the first completes.
 
-The sidebar reads Paseo's own archive records, including chats archived outside this plugin and chats in background or archived workspaces. It refreshes every 15 seconds and has a manual Refresh button. There is no separate archive index to lose or migrate when defaults change. **Paseo's built-in Archive action does not automatically create an export**; use Archive inside Export for export-before-archive.
+The file list scans `~/Paseo Exports`, your current custom default folders, and paths remembered when this version exports or archives. Catalog receipts live under `~/Paseo Exports/.archive-catalog/<host namespace>` and contain file paths, not copies of the conversation. This preserves discovery when defaults change or the plugin reloads. Use **Scan folder** for older session-folder exports or another folder, or enter an absolute file path and choose **Inspect file**. Paths refer to the selected daemon host. Only regular Markdown/JSON exports in this exporter's format are accepted; unrelated files and unreadable or oversized exports produce warnings. Source files are never changed or deleted by importing.
 
-Restore reloads the original agent using Paseo's supported SDK, without creating a new agent, submitting a prompt, or importing the export. The original Paseo record and provider persistence must remain available. Deleted provider history, missing providers, or removed worktrees can prevent resuming. Markdown and JSON exports are not full session backups and cannot recreate deleted sessions. Export files are not deleted or changed on restore.
+**Restore from file is a context import.** It reads the file itself and creates a new agent using the SDK with the complete saved text embedded in its persisted additional system context. It does not look up the original agent, so the original Paseo record and provider session can be gone. The new chat is titled `Restored: <title>` and opens when navigation is available. No initial prompt is submitted and archived commands are not replayed. Send your next message to continue with the saved conversation as reference. A plugin timeline receipt identifies the source; that display-only receipt can disappear on daemon restart, while the saved agent configuration retains the imported context.
 
-Paseo can also archive managed child agents when archiving a parent. Their separate histories are not included in the parent's export, and restoring the parent does not automatically restore its children. Workspace archiving and worktree deletion are not performed by the plugin's archive action. Restoring a chat from an already-archived workspace uses Paseo's normal workspace restoration behavior.
+Paseo's provider-import endpoint accepts an existing native provider-session ID, not arbitrary transcript messages. The public plugin SDK does not expose reconstruction of native user/assistant history from Markdown/JSON. Context import is therefore the supported fallback: it does not recreate old message bubbles, native tool state, binary attachments, or the original provider session identity. Imports over **1 MiB** are rejected before chat creation, never silently truncated. The selected provider's context and launch limits also apply. Choose a currently available provider/model and an existing working directory, especially if the original worktree was removed. Conversation content is supplied to that provider when the restored chat is used.
+
+**Paseo native archives** is a separate, secondary view for unhiding existing sessions with **Unarchive** or **Unarchive and open**. That operation still requires the original record and provider persistence. It is not the file-import path. **Paseo's built-in Archive action does not automatically create an export**; use Archive inside Export for export-before-archive.
+
+Paseo can also archive managed child agents when archiving a parent. Their separate histories are not included in the parent's export, and restoring the parent does not automatically restore its children. Workspace archiving and worktree deletion are not performed by the plugin's archive action. Native unarchive uses Paseo's normal workspace restoration behavior.
 
 ## Saved defaults
 
@@ -67,13 +71,13 @@ Paseo compiles the TypeScript sources and supplies runtime libraries. There is n
 
 Markdown preserves message Markdown and includes session metadata, numbered user/assistant messages, reasoning, tool details and errors, task checkboxes, notices, compaction markers, and plugin rows. Reasoning and tool details use standard Markdown inside HTML `details` blocks, supported by GitHub and many Markdown viewers. Viewers without HTML disclosure support may display these differently.
 
-JSON has `schemaVersion: 1`, `exportedAt`, `options`, `session`, and `entries`. Each entry contains the original structured timeline item, provider, sequence ranges, collapse metadata, and optional timestamp. It is intended for downstream processing, not re-import into Paseo. Session metadata includes provider, model, and reasoning effort at export time. Effective/runtime values take precedence over configuration; configured provider, model, and effort are preserved separately. Unreported effort is `null` in JSON and “Not reported” in Markdown. These settings are exported even when reasoning text is excluded. Historical model/effort changes are not exposed per message by Paseo. Only relevant metadata is exported, rather than the full agent configuration.
+JSON has `schemaVersion: 1`, `exportedAt`, `options`, `session`, and `entries`. Each entry contains the original structured timeline item, provider, sequence ranges, collapse metadata, and optional timestamp. It supports downstream processing and context import through Archived chats. Session metadata includes provider, model, and reasoning effort at export time. Effective/runtime values take precedence over configuration; configured provider, model, and effort are preserved separately. Unreported effort is `null` in JSON and “Not reported” in Markdown. These settings are exported even when reasoning text is excluded. Historical model/effort changes are not exposed per message by Paseo. Only relevant metadata is exported, rather than the full agent configuration.
 
 The exporter walks all available history pages backwards from the initial newest boundary and restores chronological order. It requests Paseo’s projected history to avoid repeated streaming deltas and tool lifecycle updates. Cursor failures, history replacement, and reported gaps fail the export instead of silently saving a partial file.
 
 A snapshot can include an active/unfinished turn. Exports cannot recover material removed by provider retention or compaction. Attachments are represented only as exposed by Paseo’s timeline; binary files are not embedded or copied. Child-agent histories remain separate sessions. Message timestamps are the timeline timestamps supplied by Paseo; they are not reconstructed.
 
-The plugin makes no external network requests. Preview and clipboard content travels over the existing Paseo connection. Saved files can include sensitive conversation and tool output, including secrets that were already in the session.
+The plugin makes no direct external network requests. Preview, inspection, and clipboard content travels over the existing Paseo connection. Context import places conversation content into the selected provider's agent configuration, so using that chat can send it to the provider. Saved files can include sensitive conversation and tool output, including secrets that were already in the session.
 
 ## Development
 
@@ -89,16 +93,21 @@ Source layout:
 
 - `index.client.tsx`: composer button, command, slash command, and panel registration.
 - `client/export-panel.tsx`: shared popover/panel controls, themed preview, and inline archive confirmation.
-- `client/archive-screen.tsx`: sidebar archive list, search, and restore actions.
+- `client/archive-screen.tsx`: main sidebar entry, file-first source selector, and separate native-unarchive view.
+- `client/archive-files-screen.tsx`: file discovery, inspection, preview, and context-import controls.
+- `client/archive-import-receipt.tsx`: receipt shown in a newly imported context chat.
 - `index.server.ts`: RPC registration.
 - `server/history.ts`: complete history pagination and consistency checks.
 - `server/markdown.ts`: Markdown formatting and filename generation.
 - `server/export.ts`: JSON formatting, destination selection, and exclusive file writes.
 - `server/archive.ts`: native archive discovery, per-agent operation locks, export-before-archive, and original-session restore.
+- `server/archive-files.ts`: bounded file reads, format validation, durable host-scoped path catalog, and file-to-context import.
 - `shared/export.ts`: validated RPC contracts.
 - `shared/archive.ts`: validated archive/list/restore contracts.
+- `shared/archive-files.ts`: file metadata, inspection/import contracts, and receipt schema.
 - `tests/export.test.ts`: pagination, format, filtering, error, destination, and save tests.
 - `tests/archive.test.ts`: archive ordering, saved defaults, failure handling, concurrency, directory pagination, and restore tests.
+- `tests/archive-files.test.ts`: independent file restoration, catalog persistence, invalid inputs, concurrency, and source-file preservation.
 - `tests/export-ui.test.ts`: single-tool registration, inline archive placement in both popup hosts, confirmation, and error-state tests.
 
 GitHub Actions runs typechecking, all tests, and a package contents check on every push and pull request, using Node.js 22 and 24. The workflow can also be started manually.

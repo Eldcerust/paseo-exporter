@@ -12,7 +12,7 @@ function requireInactive(agent: Agent) {
   }
 }
 
-export function createArchiveService(readPreferences: () => Promise<Preferences>) {
+export function createArchiveService(readPreferences: () => Promise<Preferences>, rememberExport?: (path: string, context: Context) => Promise<void>) {
   // One operation per agent across clients. Release even when export or provider resume fails.
   const pending = new Set<string>();
   async function exclusive<T>(agentId: string, operation: () => Promise<T>) {
@@ -33,6 +33,7 @@ export function createArchiveService(readPreferences: () => Promise<Preferences>
       }
       const saved = await saveSession({ agentId, ...defaults, destination: defaults.destination }, context);
       try {
+        await rememberExport?.(saved.path, context);
         const latest = await handle.refresh();
         if (!latest?.agent) throw new Error("Chat is no longer available.");
         requireInactive(latest.agent);
@@ -72,7 +73,7 @@ export function createArchiveService(readPreferences: () => Promise<Preferences>
     restore: ({ agentId }: { agentId: string }, { paseo }: Context) => exclusive(agentId, async () => {
       const handle = paseo.agents.ref(agentId);
       const snapshot = await handle.refresh();
-      if (!snapshot?.agent) throw new Error("This chat no longer exists on this host. Export files cannot be imported as live Paseo sessions.");
+      if (!snapshot?.agent) throw new Error("This native chat no longer exists. Use Saved export files to import its Markdown/JSON into a new context chat.");
       if (snapshot.agent.archivedAt) {
         // reload invokes refresh_agent_request, which restores the owning workspace and unarchives.
         const restored = await handle.reload();

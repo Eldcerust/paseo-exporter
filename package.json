@@ -30,7 +30,7 @@
     "typescript": "^5.9.3",
     "zod": "^4.4.3"
   },
-  "description": "Export Paseo conversations as Markdown or JSON, archive using saved export defaults, and restore original chats from the sidebar.",
+  "description": "Export and archive Paseo conversations as Markdown or JSON, then import saved files into new context-loaded chats from the sidebar.",
   "license": "MIT",
   "repository": {
     "type": "git",

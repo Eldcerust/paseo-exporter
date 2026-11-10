@@ -4,15 +4,28 @@ import { type PluginScreenProps, type PluginSidebarItemProps, useRpc } from "@ge
 import { SidebarRow, TextInput } from "@getpaseo/plugin/client/ui";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { listArchives, restoreArchive } from "../shared/archive";
+import { ArchiveFilesScreen } from "./archive-files-screen";
 
 export function ArchiveSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
   return <SidebarRow icon="ArchiveRestore" label="Archived chats" active={currentScreen?.screenId === "archive"} onPress={() => openScreen({ screenId: "archive" })} />;
 }
 export function ArchiveScreen(props: PluginScreenProps) {
   // Reset search and pending feedback when the selected host changes.
-  return <HostArchiveScreen key={props.host.id} {...props} />;
+  return <ArchiveSources key={props.host.id} {...props} />;
 }
-function HostArchiveScreen({ theme, host, layout, navigation }: PluginScreenProps) {
+function ArchiveSources(props: PluginScreenProps) {
+  const [source, setSource] = useState<"files" | "native">("files");
+  return <View style={{ flex: 1, backgroundColor: props.theme.colors.surface0 }}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, padding: 12 }}>
+      {([["files", "Saved export files"], ["native", "Paseo native archives"]] as const).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityState={{ selected: source === value }} onPress={() => setSource(value)}
+        style={{ padding: 10, borderRadius: 8, backgroundColor: source === value ? props.theme.colors.accent : props.theme.colors.surface1 }}>
+        <Text style={{ color: source === value ? props.theme.colors.accentForeground : props.theme.colors.foreground }}>{label}</Text>
+      </Pressable>)}
+    </View>
+    {source === "files" ? <ArchiveFilesScreen {...props} /> : <NativeArchiveScreen {...props} />}
+  </View>;
+}
+export function NativeArchiveScreen({ theme, host, layout, navigation }: PluginScreenProps) {
   const list = useRpc(listArchives);
   const restore = useRpc(restoreArchive);
   const [search, setSearch] = useState("");
@@ -33,9 +46,8 @@ function HostArchiveScreen({ theme, host, layout, navigation }: PluginScreenProp
   const needle = search.trim().toLowerCase();
   const entries = (archives.data?.entries ?? []).filter((entry) => [entry.title, entry.id, entry.cwd, entry.provider, entry.model].some((value) => value?.toLowerCase().includes(needle)));
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 24, gap: 16 }}>
-    <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Archived chats</Text>
-    <Text style={text}>Archived chats on {host.label}, including chats archived directly in Paseo. Restore reopens the original session; it does not import Markdown or JSON.</Text>
-    <Text style={muted}>Open Export and choose Archive to save an export before archiving. /archive and the Command Center also open Export. Archive uses saved workspace defaults first, then host defaults. Change them in Export → Defaults. Files remain where they were saved after restoring.</Text>
+    <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Paseo native archives</Text>
+    <Text style={text}>This separate list unhides existing Paseo sessions on {host.label}. To import a saved Markdown or JSON file, choose Saved export files above.</Text>
     <View style={{ flexDirection: layout.compact ? "column" : "row", gap: 8 }}>
       <TextInput accessibilityLabel="Search archived chats" value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
         placeholder="Search title, provider, folder, or ID" placeholderTextColor={colors.foregroundMuted}
@@ -56,10 +68,10 @@ function HostArchiveScreen({ theme, host, layout, navigation }: PluginScreenProp
       <Text selectable style={muted}>{entry.id}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {(navigation ? [false, true] : [false]).map((open) => <Pressable key={String(open)} accessibilityRole="button"
-          accessibilityLabel={`${open ? "Restore and open" : "Restore"} ${entry.title || entry.id}`} disabled={restoring.isPending}
+          accessibilityLabel={`${open ? "Unarchive and open" : "Unarchive"} ${entry.title || entry.id}`} disabled={restoring.isPending}
           accessibilityState={{ disabled: restoring.isPending }} onPress={() => { setNotice(""); restoring.mutate({ agentId: entry.id, open }); }}
           style={{ padding: 10, borderRadius: 8, backgroundColor: open ? colors.surface2 : colors.accent, opacity: restoring.isPending ? 0.5 : 1 }}>
-          <Text style={{ color: open ? colors.foreground : colors.accentForeground }}>{restoring.isPending && restoring.variables?.agentId === entry.id ? "Restoring…" : open ? "Restore and open" : "Restore"}</Text>
+          <Text style={{ color: open ? colors.foreground : colors.accentForeground }}>{restoring.isPending && restoring.variables?.agentId === entry.id ? "Unarchiving…" : open ? "Unarchive and open" : "Unarchive"}</Text>
         </Pressable>)}
       </View>
     </View>)}

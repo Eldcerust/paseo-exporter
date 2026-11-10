@@ -5,6 +5,7 @@ import ts from "typescript";
 import * as contracts from "../shared/export";
 import * as archiveContracts from "../shared/archive";
 import * as settings from "../shared/preferences";
+import * as fileContracts from "../shared/archive-files";
 
 // Execute the real TSX with small host-boundary mocks, without loading React Native in Node.
 type Props = Record<string, any>;
@@ -43,10 +44,12 @@ test("the exporter contributes one Export tool and a discoverable Archived chats
   const module = await loadClient("index.client.tsx", {
     "./client/export-panel": { ExportPanel: () => null, ExportPopover: () => null },
     "./client/archive-screen": { ArchiveScreen: () => null, ArchiveSidebarItem: () => null },
+    "./client/archive-import-receipt": { ArchiveImportReceipt: () => null },
+    "./shared/archive-files": fileContracts,
     "./client/hub-compat": { registerComposerPill: (_client: unknown, spec: Props) => { contributed.pills.push(spec); return { remove() {} }; } },
   });
   const cleanup = module.default({
-    addWorkspacePanel: add("panels"), addScreen: add("screens"), addSidebarHeaderItem: add("header"), addSidebarFooterItem: add("footer"),
+    addWorkspacePanel: add("panels"), addScreen: add("screens"), addSidebarHeaderItem: add("header"), addSidebarFooterItem: add("footer"), addTimelineRenderer: () => () => {},
     addCommandCenterItem: add("commands"), addSlashCommand: add("slash"),
     paseo: { agents: { list: async () => ({ subscription: {
       subscribe: ({ snapshot }: Props) => snapshot({ entries: [{ agent: { id: "chat", workspaceId: "workspace" } }] }),
@@ -176,7 +179,7 @@ test("inline archive retains the export popover and displays failures", async ()
   assert.ok(ui.elements(ui.render()).some((entry) => entry.props.accessibilityRole === "alert" && entry.props.children === "Folder is not writable"));
 });
 
-test("the Archived chats sidebar link opens the restore screen and its buttons restore the selected original chat", async () => {
+test("the secondary native-archive screen explicitly unarchives existing chats", async () => {
   for (const open of [false, true]) {
     const record = { id: "original-chat", title: "Test archived chat", provider: "codex", model: "test", cwd: "project", archivedAt: "2026-11-10T00:00:00Z" };
     const requests: { method: string; input: unknown }[] = [];
@@ -198,16 +201,17 @@ test("the Archived chats sidebar link opens the restore screen and its buttons r
         } }),
       },
       "../shared/archive": archiveContracts,
+      "./archive-files-screen": { ArchiveFilesScreen: () => null },
     });
     const sidebar = module.ArchiveSidebarItem({ currentScreen: null, openScreen: (input: unknown) => openedScreens.push(input) }) as Element;
     assert.equal(sidebar.props.label, "Archived chats");
     sidebar.props.onPress();
     assert.deepEqual(openedScreens, [{ screenId: "archive" }]);
-    const tree = expand(module.ArchiveScreen({
+    const tree = expand(module.NativeArchiveScreen({
       host: { id: "host", label: "Test host" }, layout: { compact: false }, theme: { colors: {} },
       navigation: { openAgent: (input: unknown) => openedAgents.push(input) },
     }));
-    const restore = elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === `${open ? "Restore and open" : "Restore"} ${record.title}`);
+    const restore = elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === `${open ? "Unarchive and open" : "Unarchive"} ${record.title}`);
     assert.ok(restore, "the archive screen must expose a restore button for the selected chat");
     restore.props.onPress();
     await mutationDone;
@@ -217,4 +221,76 @@ test("the Archived chats sidebar link opens the restore screen and its buttons r
     ]);
     assert.deepEqual(openedAgents, open ? [{ agentId: record.id }] : []);
   }
+});
+
+test("Archived chats opens saved export files by default, not native unarchive", async () => {
+  const module = await loadClient("client/archive-screen.tsx", {
+    react: { useState: (initial: unknown) => [initial, () => {}] },
+    "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
+    "@getpaseo/plugin/client/ui": { SidebarRow: "SidebarRow", TextInput: "TextInput" },
+    "@getpaseo/plugin/client": {}, "@tanstack/react-query": {}, "../shared/archive": archiveContracts,
+    "./archive-files-screen": { ArchiveFilesScreen: () => jsx("SavedExportFiles", {}) },
+  });
+  const tree = expand(module.ArchiveScreen({ host: { id: "host" }, theme: { colors: {} } }));
+  assert.ok(elements(tree).some((entry) => entry.type === "SavedExportFiles"));
+});
+
+test("a saved export can be inspected and restored through the file-import RPC in the sidebar", async () => {
+  const states: unknown[] = [];
+  const mutations: Props[] = [];
+  const requests: { method: string; input: unknown }[] = [];
+  const opened: unknown[] = [];
+  let stateIndex = 0;
+  let mutationIndex = 0;
+  const file = { path: "C:\\exports\\saved.json", title: "File-only chat", format: "json", provider: "opencode/test", cwd: "C:\\project", entryCount: 2, bytes: 200, sourceAgentId: "deleted-original", exportedAt: "now" };
+  const module = await loadClient("client/archive-files-screen.tsx", {
+    react: { useState: (initial: unknown) => {
+      const index = stateIndex++;
+      if (!(index in states)) states[index] = initial;
+      return [states[index], (value: unknown) => { states[index] = value; }];
+    } },
+    "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
+    "@getpaseo/plugin/client/ui": { Markdown: "Markdown", TextInput: "TextInput" },
+    "@getpaseo/plugin/client": { useRpc: (contract: Props) => async (input: unknown) => {
+      requests.push({ method: contract.name, input });
+      if (contract.name === "archive.files.inspect") return { file, content: "saved conversation" };
+      if (contract.name === "archive.files.import") return { agentId: "new-context-chat", mode: "context", path: file.path };
+      throw new Error("File restoration must not call native unarchive");
+    } },
+    "@tanstack/react-query": {
+      useQuery: () => ({ data: { entries: [file], warnings: [] } }),
+      useMutation: (config: Props) => {
+        const index = mutationIndex++;
+        const mutation = mutations[index] ??= { isPending: false, isSuccess: false };
+        mutation.reset = () => { delete mutation.data; delete mutation.error; mutation.isSuccess = false; };
+        mutation.mutate = async (input: unknown) => {
+          mutation.data = await config.mutationFn(input);
+          mutation.isSuccess = true;
+          await config.onSuccess?.(mutation.data);
+        };
+        return mutation;
+      },
+    },
+    "../shared/archive-files": fileContracts,
+  });
+  function render() {
+    stateIndex = mutationIndex = 0;
+    return expand(module.ArchiveFilesScreen({ theme: { colors: {} }, host: { id: "host", label: "Test" }, layout: { compact: true }, navigation: { openAgent: (input: unknown) => opened.push(input) } }));
+  }
+  function button(tree: unknown, label: string) {
+    const result = elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === label);
+    assert.ok(result, `Missing file import button: ${label}`);
+    return result.props;
+  }
+  await button(render(), "Select export: File-only chat").onPress();
+  const confirm = button(render(), "Restore from file");
+  assert.equal(confirm.disabled, false);
+  await confirm.onPress();
+  const requestId = (requests[1].input as Props).requestId;
+  assert.ok(requestId);
+  assert.deepEqual(requests, [
+    { method: "archive.files.inspect", input: { path: file.path } },
+    { method: "archive.files.import", input: { path: file.path, provider: file.provider, cwd: file.cwd, requestId } },
+  ]);
+  assert.deepEqual(opened, [{ agentId: "new-context-chat" }]);
 });

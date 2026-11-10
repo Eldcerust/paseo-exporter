@@ -136,6 +136,17 @@ test("native archive failure keeps the export and releases the operation lock", 
   assert.equal((await readdir(f.directory)).length, 2);
   assert.equal(f.calls.archive, 1);
 });
+test("archive registers the saved file before hiding the chat and catalog failure leaves it active", async (t) => {
+  const f = await fixture(t);
+  const service = createArchiveService(async () => f.preferences, async (path) => {
+    assert.match(await readFile(path, "utf8"), /Keep my chat/);
+    assert.equal(f.calls.archive, 0);
+    throw new Error("Catalog is not writable");
+  });
+  await assert.rejects(service.archive({ agentId: "chat-1" }, f.context), /Export saved to .*Catalog is not writable/);
+  assert.equal(f.calls.archive, 0);
+  assert.equal(f.agent.archivedAt, null);
+});
 test("concurrent archive and restore requests for one chat are rejected", async (t) => {
   const f = await fixture(t);
   let release!: (value: Preferences) => void;
