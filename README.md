@@ -29,13 +29,13 @@ Full export panel with workspace defaults:
 ## Archive and restore
 
 1. Set your format, folder, and content options in **Export → Defaults**, using **Save for workspace** or **Save for host**. Workspace defaults take precedence.
-2. Open the **Archive** composer pill (or its tool in the Pill hub), type `/archive`, or choose **Save export and archive conversation** in the Command Center.
-3. Review the saved settings and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first.
+2. Open the existing **Export** popup or panel and choose **Archive** next to the Save button. There is no separate Archive composer pill or Pill hub tool. `/archive` and **Save export and archive conversation** in the Command Center also open Export.
+3. Review the inline confirmation and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first.
 4. Open **Archive** in the sidebar to search archived chats on the selected host. Choose **Restore** or **Restore and open**.
 
 Archive saves the same Markdown or JSON file as Export before calling Paseo's native soft archive. A failed export leaves the chat active. Clipboard defaults are not accepted for Archive: save a folder destination first. If saving succeeds but native archive fails, the error includes the saved file path and the file is retained. Concurrent archive/restore requests for the same chat through this plugin are rejected until the first completes.
 
-The sidebar reads Paseo's own archive records, including chats archived outside this plugin and chats in background or archived workspaces. It refreshes every 15 seconds and has a manual Refresh button. There is no separate archive index to lose or migrate when defaults change. **Paseo's built-in Archive action does not automatically create an export**; use this plugin's Archive tool for export-before-archive.
+The sidebar reads Paseo's own archive records, including chats archived outside this plugin and chats in background or archived workspaces. It refreshes every 15 seconds and has a manual Refresh button. There is no separate archive index to lose or migrate when defaults change. **Paseo's built-in Archive action does not automatically create an export**; use Archive inside Export for export-before-archive.
 
 Restore reloads the original agent using Paseo's supported SDK, without creating a new agent, submitting a prompt, or importing the export. The original Paseo record and provider persistence must remain available. Deleted provider history, missing providers, or removed worktrees can prevent resuming. Markdown and JSON exports are not full session backups and cannot recreate deleted sessions. Export files are not deleted or changed on restore.
 
@@ -88,8 +88,7 @@ npm pack --dry-run --ignore-scripts
 Source layout:
 
 - `index.client.tsx`: composer button, command, slash command, and panel registration.
-- `client/export-panel.tsx`: shared popover/panel controls and themed preview.
-- `client/archive-panel.tsx`: saved-default review and export-before-archive controls.
+- `client/export-panel.tsx`: shared popover/panel controls, themed preview, and inline archive confirmation.
 - `client/archive-screen.tsx`: sidebar archive list, search, and restore actions.
 - `index.server.ts`: RPC registration.
 - `server/history.ts`: complete history pagination and consistency checks.
@@ -100,6 +99,7 @@ Source layout:
 - `shared/archive.ts`: validated archive/list/restore contracts.
 - `tests/export.test.ts`: pagination, format, filtering, error, destination, and save tests.
 - `tests/archive.test.ts`: archive ordering, saved defaults, failure handling, concurrency, directory pagination, and restore tests.
+- `tests/export-ui.test.ts`: single-tool registration, inline archive placement in both popup hosts, confirmation, and error-state tests.
 
 GitHub Actions runs typechecking, all tests, and a package contents check on every push and pull request, using Node.js 22 and 24. The workflow can also be started manually.
 

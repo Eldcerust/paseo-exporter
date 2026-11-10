@@ -35,7 +35,7 @@ function HostArchiveScreen({ theme, host, layout, navigation }: PluginScreenProp
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 24, gap: 16 }}>
     <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Archive</Text>
     <Text style={text}>Archived chats on {host.label}, including chats archived directly in Paseo. Restore reopens the original session; it does not import Markdown or JSON.</Text>
-    <Text style={muted}>Use the Archive composer tool, /archive, or the Command Center to save an export before archiving. Archive uses saved workspace defaults first, then host defaults. Change them in Export → Defaults. Files remain where they were saved after restoring.</Text>
+    <Text style={muted}>Open Export and choose Archive to save an export before archiving. /archive and the Command Center also open Export. Archive uses saved workspace defaults first, then host defaults. Change them in Export → Defaults. Files remain where they were saved after restoring.</Text>
     <View style={{ flexDirection: layout.compact ? "column" : "row", gap: 8 }}>
       <TextInput accessibilityLabel="Search archived chats" value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
         placeholder="Search title, provider, folder, or ID" placeholderTextColor={colors.foregroundMuted}
