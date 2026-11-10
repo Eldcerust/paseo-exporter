@@ -20,7 +20,7 @@
     "check": "npm run typecheck && npm test"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.13.0-beta.1",
+    "@getpaseo/plugin": "0.15.3",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^26.6.5",
     "@types/react": "~19.2.0",
@@ -30,7 +30,7 @@
     "typescript": "^5.9.3",
     "zod": "^4.4.3"
   },
-  "description": "Export Paseo conversations as Markdown or JSON from a composer button, with clipboard and host folder destinations.",
+  "description": "Export Paseo conversations as Markdown or JSON, archive using saved export defaults, and restore original chats from the sidebar.",
   "license": "MIT",
   "repository": {
     "type": "git",

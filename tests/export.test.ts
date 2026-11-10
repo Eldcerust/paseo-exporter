@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fetchHistory, type HistoryEntry, type HistoryPage } from "../server/history";
 import { renderMarkdown, exportFilename, fence } from "../server/markdown";
 import { createExport, saveSession, destinationDirectory } from "../server/export";
@@ -75,9 +75,9 @@ test("JSON keeps structured entries and honors reasoning, tool, and timestamp fi
   assert.equal(filtered.entryCount, 2); assert.equal(JSON.parse(filtered.content).entries[0].timestamp, undefined);
 });
 test("host and session destinations resolve explicitly, relative custom paths fail", () => {
-  assert.equal(destinationDirectory("exports", undefined, "/work", "/home/test"), "/home/test/Paseo Exports");
-  assert.equal(destinationDirectory("session", undefined, "/work", "/home/test"), "/work/Paseo Exports");
-  assert.equal(destinationDirectory("custom", "~/notes", "/work", "/home/test"), "/home/test/notes");
+  assert.equal(destinationDirectory("exports", undefined, "/work", "/home/test"), join("/home/test", "Paseo Exports"));
+  assert.equal(destinationDirectory("session", undefined, "/work", "/home/test"), join("/work", "Paseo Exports"));
+  assert.equal(destinationDirectory("custom", "~/notes", "/work", "/home/test"), resolve("/home/test", "notes"));
   assert.throws(() => destinationDirectory("custom", "notes", "/work"), /absolute/);
 });
 test("saves both formats without overwriting and reports file permission errors", async () => {
@@ -88,7 +88,7 @@ test("saves both formats without overwriting and reports file permission errors"
     const first = await saveSession(input, context);
     const second = await saveSession(input, context);
     assert.notEqual(first.path, second.path); assert.ok((await readFile(first.path, "utf8")).includes("# Answer"));
-    assert.equal((await stat(first.path)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await stat(first.path)).mode & 0o777, 0o600);
     const json = await saveSession({ ...input, format: "json" }, context);
     assert.equal(JSON.parse(await readFile(json.path, "utf8")).entries.length, 2);
     await assert.rejects(saveSession({ ...input, directory: first.path }, context));

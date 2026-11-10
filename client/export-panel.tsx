@@ -17,7 +17,7 @@ export function ExportPopover(props: PluginButtonContentProps & { onOpenPreview(
 export function ExportPanel(props: PluginAgentPanelProps) {
   return <ExportForm {...props} />;
 }
-type FormProps = PluginAgentPanelProps & { popover?: boolean; onOpenPreview?: () => void };
+type FormProps = Pick<PluginAgentPanelProps, "theme" | "host" | "layout" | "workspaceId" | "agentId" | "context"> & { popover?: boolean; onOpenPreview?: () => void };
 function ExportForm(props: FormProps) {
   return useHostedClient() ? <HostedDefaults {...props} /> : <LiveDefaults {...props} />;
 }

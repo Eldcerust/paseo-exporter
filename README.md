@@ -1,6 +1,6 @@
 # Paseo exporter
 
-Export a session as formatted Markdown or structured JSON using a composer **Export** button, `/export`, or the Command Center.
+Export a session as formatted Markdown or structured JSON using a composer **Export** button, `/export`, or the Command Center. Archive a chat after saving an export with your existing defaults, then restore the original session from **Archive** in the sidebar.
 
 ## Use
 
@@ -26,6 +26,21 @@ Full export panel with workspace defaults:
 
 ![Export panel and saved defaults](docs/images/export-panel.png)
 
+## Archive and restore
+
+1. Set your format, folder, and content options in **Export → Defaults**, using **Save for workspace** or **Save for host**. Workspace defaults take precedence.
+2. Open the **Archive** composer pill (or its tool in the Pill hub), type `/archive`, or choose **Save export and archive conversation** in the Command Center.
+3. Review the saved settings and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first.
+4. Open **Archive** in the sidebar to search archived chats on the selected host. Choose **Restore** or **Restore and open**.
+
+Archive saves the same Markdown or JSON file as Export before calling Paseo's native soft archive. A failed export leaves the chat active. Clipboard defaults are not accepted for Archive: save a folder destination first. If saving succeeds but native archive fails, the error includes the saved file path and the file is retained. Concurrent archive/restore requests for the same chat through this plugin are rejected until the first completes.
+
+The sidebar reads Paseo's own archive records, including chats archived outside this plugin and chats in background or archived workspaces. It refreshes every 15 seconds and has a manual Refresh button. There is no separate archive index to lose or migrate when defaults change. **Paseo's built-in Archive action does not automatically create an export**; use this plugin's Archive tool for export-before-archive.
+
+Restore reloads the original agent using Paseo's supported SDK, without creating a new agent, submitting a prompt, or importing the export. The original Paseo record and provider persistence must remain available. Deleted provider history, missing providers, or removed worktrees can prevent resuming. Markdown and JSON exports are not full session backups and cannot recreate deleted sessions. Export files are not deleted or changed on restore.
+
+Paseo can also archive managed child agents when archiving a parent. Their separate histories are not included in the parent's export, and restoring the parent does not automatically restore its children. Workspace archiving and worktree deletion are not performed by the plugin's archive action. Restoring a chat from an already-archived workspace uses Paseo's normal workspace restoration behavior.
+
 ## Saved defaults
 
 Open **Export**, select your format, destination, and content options, then expand **Defaults**:
@@ -40,10 +55,10 @@ Preferences are stored through Paseo’s host-side plugin settings, shared by cl
 
 ## Install locally
 
-Requires Paseo **0.13.0-beta.1 or a compatible later release**, including the app that renders client contributions. Enable plugins in Paseo settings, then:
+Requires Paseo **0.15.3 or a compatible later release**, including the app that renders client contributions. Enable plugins in Paseo settings, then:
 
 ```sh
-paseo plugin install github:sgoley/paseo-exporter
+paseo plugin install git:Eldcerust/paseo-exporter
 ```
 
 Paseo compiles the TypeScript sources and supplies runtime libraries. There is no runtime dependency installation or build command.
@@ -65,8 +80,8 @@ The plugin makes no external network requests. Preview and clipboard content tra
 ```sh
 npm ci
 npm run check
-paseo plugin reload paseo-exporter
-paseo plugin logs paseo-exporter
+paseo plugin reload paseo-exporter-fork
+paseo plugin logs paseo-exporter-fork
 npm pack --dry-run --ignore-scripts
 ```
 
@@ -74,12 +89,17 @@ Source layout:
 
 - `index.client.tsx`: composer button, command, slash command, and panel registration.
 - `client/export-panel.tsx`: shared popover/panel controls and themed preview.
+- `client/archive-panel.tsx`: saved-default review and export-before-archive controls.
+- `client/archive-screen.tsx`: sidebar archive list, search, and restore actions.
 - `index.server.ts`: RPC registration.
 - `server/history.ts`: complete history pagination and consistency checks.
 - `server/markdown.ts`: Markdown formatting and filename generation.
 - `server/export.ts`: JSON formatting, destination selection, and exclusive file writes.
+- `server/archive.ts`: native archive discovery, per-agent operation locks, export-before-archive, and original-session restore.
 - `shared/export.ts`: validated RPC contracts.
+- `shared/archive.ts`: validated archive/list/restore contracts.
 - `tests/export.test.ts`: pagination, format, filtering, error, destination, and save tests.
+- `tests/archive.test.ts`: archive ordering, saved defaults, failure handling, concurrency, directory pagination, and restore tests.
 
 GitHub Actions runs typechecking, all tests, and a package contents check on every push and pull request, using Node.js 22 and 24. The workflow can also be started manually.
 
