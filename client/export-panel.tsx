@@ -6,7 +6,7 @@ import { copyText, Markdown, TextInput, useToast } from "@getpaseo/plugin/client
 import { useHostedClient, useRpc } from "./hub-compat";
 import { defaultsSchema, preferences, readPreferences, resolveDefaults, type ExportDefaults } from "../shared/preferences";
 import { exportSession, saveExport, type ExportOptions, type ExportFormat } from "../shared/export";
-import { archiveSession } from "../shared/archive";
+import { archiveSession, workspaceSummary } from "../shared/archive";
 
 type Destination = "clipboard" | "exports" | "session" | "custom";
 export function ExportPopover(props: PluginButtonContentProps & { onOpenPreview(): void }) {
@@ -63,7 +63,7 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
   saveDefaults(scope: "workspace" | "host" | "inherit", draft: ExportDefaults): Promise<string>;
 }) {
   const agent = useAgent(agentId, (record) => ({ title: record.title, status: record.status }));
-  const workspace = useWorkspace(workspaceId, (record) => ({ name: record.name }));
+  const workspace = useWorkspace(workspaceId, (record) => ({ name: record.name, title: record.title }));
   const [showDefaults, setShowDefaults] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
   const savingDefaults = useMutation({ mutationFn: (scope: "workspace" | "host" | "inherit") => saveDefaults(scope, { options, format, destination, directory }) });
@@ -74,7 +74,7 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
   const archiving = useMutation({
     mutationFn: () => archive({ agentId }),
     onSuccess: (result) => {
-      toast.show(`Chat archived. Saved ${result.entryCount} entries to ${result.path}`, { variant: "success" });
+      toast.show(`Chat archived. Saved ${result.entryCount} entries to ${result.path}. ${workspaceSummary(result.workspace)}`, { variant: "success" });
       onArchived?.();
     },
   });
@@ -142,7 +142,8 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
     </View>
     {showArchive && <View style={{ gap: 8, padding: 12, borderRadius: 8, backgroundColor: colors.surface1 }}>
       <Text accessibilityRole="header" style={{ ...text, fontSize: 14, fontWeight: "600" }}>Archive this conversation?</Text>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Save an export using your saved {hasWorkspaceDefaults ? "workspace" : "host"} defaults, then archive the chat. Unsaved changes above do not change archive defaults.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{`Save an export using your saved ${hasWorkspaceDefaults ? "workspace" : "host"} defaults, then archive the chat and its workspace “${workspace?.title || workspace?.name || "this workspace"}” so it leaves the sidebar. Unsaved changes above do not change archive defaults.`}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>The workspace’s terminals close with it. If another chat is still active in the workspace, or it is a Git worktree, the workspace stays and the chat is archived alone.</Text>
       <Text selectable style={{ ...text, fontSize: 12 }}>{initialDefaults.format === "markdown" ? "Markdown (.md)" : "JSON (.json)"} · {initialDefaults.destination === "exports" ? `~/Paseo Exports on ${host.label}` : initialDefaults.destination === "session" ? `Paseo Exports in the session folder on ${host.label}` : initialDefaults.destination === "custom" ? `${initialDefaults.directory} on ${host.label}` : "Clipboard: save a folder default first"}</Text>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reasoning: {initialDefaults.options.includeReasoning ? "on" : "off"} · Tools: {initialDefaults.options.includeTools ? "on" : "off"} · Timestamps: {initialDefaults.options.includeTimestamps ? "on" : "off"}</Text>
       {running && <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Wait for the current turn to finish or stop it before archiving.</Text>}
@@ -153,7 +154,7 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
         {action("Cancel", () => setShowArchive(false))}
       </View>
       {archiving.error && <Text accessibilityRole="alert" selectable style={text}>{archiving.error.message}</Text>}
-      {archiving.data && <Text accessibilityLiveRegion="polite" selectable style={text}>Saved to {archiving.data.path}. Open Archived chats in the sidebar to restore this chat.</Text>}
+      {archiving.data && <Text accessibilityLiveRegion="polite" selectable style={text}>{`Saved to ${archiving.data.path}. ${workspaceSummary(archiving.data.workspace)} Open Archived chats in the sidebar to restore this chat.`}</Text>}
     </View>}
     <Pressable accessibilityRole="button" accessibilityState={{ expanded: showDefaults }} onPress={() => setShowDefaults(!showDefaults)} style={{ paddingVertical: 4 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{showDefaults ? "▾" : "▸"} Defaults · {hasWorkspaceDefaults ? "workspace" : "host"}</Text>

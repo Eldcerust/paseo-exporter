@@ -1,7 +1,7 @@
 {
     "id":  "paseo-exporter-fork",
     "name":  "Conversation exporter",
-    "description":  "Your fork of sgoley's Conversation exporter. Archive inside Export, then import saved Markdown/JSON files as new context-loaded chats from Archived chats in the sidebar. Native unarchive is separate.",
+    "description":  "Your fork of sgoley's Conversation exporter. Archive inside Export closes the chat and its own workspace, then import saved Markdown/JSON files as new context-loaded chats from Archived chats in the sidebar. Native unarchive is separate.",
     "requirements":  {
                          "paseo":  ">=0.15.3"
                      }

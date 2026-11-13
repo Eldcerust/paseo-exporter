@@ -69,7 +69,9 @@ test("the exporter contributes one Export tool and a discoverable Archived chats
   cleanup();
 });
 
-async function exportHarness({ hosted = false, destination = "exports", status = "idle", failure = "" } = {}) {
+const archivedWorkspace = { id: "workspace", name: "Example workspace", archived: true, note: null as string | null };
+async function exportHarness({ hosted = false, destination = "exports", status = "idle", failure = "", workspace = archivedWorkspace } = {}) {
+  const toasts: string[] = [];
   const states: unknown[] = [];
   const mutations: Props[] = [];
   const requests: { method: string; input: unknown }[] = [];
@@ -86,17 +88,17 @@ async function exportHarness({ hosted = false, destination = "exports", status =
     "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
     "@getpaseo/plugin/client": {
       useAgent: (_id: string, select: (record: Props) => unknown) => select({ title: "Example chat", status }),
-      useWorkspace: (_id: string, select: (record: Props) => unknown) => select({ name: "Example workspace" }),
+      useWorkspace: (_id: string, select: (record: Props) => unknown) => select({ name: "example-folder", title: "Example workspace" }),
       useSettings: () => ({ status: "ready", values, revision: "1" }),
     },
-    "@getpaseo/plugin/client/ui": { copyText: async () => {}, Markdown: "Markdown", TextInput: "TextInput", useToast: () => ({ show() {} }) },
+    "@getpaseo/plugin/client/ui": { copyText: async () => {}, Markdown: "Markdown", TextInput: "TextInput", useToast: () => ({ show: (message: string) => { toasts.push(message); } }) },
     "./hub-compat": {
       useHostedClient: () => hosted ? {} : null,
       useRpc: (contract: Props) => async (input: unknown) => {
         requests.push({ method: contract.name, input });
         if (contract.name === "session.archive") {
           if (failure) throw new Error(failure);
-          return { path: "saved-export.md", entryCount: 2, archivedAt: "now" };
+          return { path: "saved-export.md", entryCount: 2, archivedAt: "now", workspace };
         }
         return values;
       },
@@ -133,7 +135,7 @@ async function exportHarness({ hosted = false, destination = "exports", status =
     assert.ok(match, `Expected ${label} inside Export`);
     return match.props;
   }
-  return { render, button, elements, requests, isClosed: () => closed };
+  return { render, button, elements, requests, toasts, isClosed: () => closed };
 }
 
 test("Archive is inside Export on standalone and Pill hub popovers, including compact layouts", async () => {
@@ -293,4 +295,68 @@ test("a saved export can be inspected and restored through the file-import RPC i
     { method: "archive.files.import", input: { path: file.path, provider: file.provider, cwd: file.cwd, requestId } },
   ]);
   assert.deepEqual(opened, [{ agentId: "new-context-chat" }]);
+});
+
+const words = (tree: unknown) => elements(tree).filter((entry) => entry.type === "Text").map((entry) => [entry.props.children].flat().join("")).join("\n");
+test("full session ui: confirmation and receipt name the workspace", async () => {
+  const ui = await exportHarness();
+  ui.button(ui.render(false, true), "Archive").onPress();
+  const confirmation = words(ui.render(false, true));
+  assert.match(confirmation, /archive the chat and its workspace “Example workspace” so it leaves the sidebar/);
+  assert.match(confirmation, /terminals close with it/);
+  assert.match(confirmation, /another chat is still active in the workspace, or it is a Git worktree, the workspace stays/);
+  await ui.button(ui.render(false, true), "Save export and archive").onPress();
+  assert.match(words(ui.render(false, true)), /Saved to saved-export\.md\. Workspace “Example workspace” archived\. Open Archived chats/);
+  assert.deepEqual(ui.toasts, ["Chat archived. Saved 2 entries to saved-export.md. Workspace “Example workspace” archived."]);
+
+  const note = "1 other chat is still active in this workspace, so it was kept. Archive the workspace from the sidebar to close them too.";
+  const kept = await exportHarness({ workspace: { id: "workspace", name: "Example workspace", archived: false, note } });
+  kept.button(kept.render(), "Archive").onPress();
+  await kept.button(kept.render(), "Save export and archive").onPress();
+  assert.deepEqual(kept.toasts, [`Chat archived. Saved 2 entries to saved-export.md. ${note}`]);
+  assert.match(words(kept.render()), /Saved to saved-export\.md\. 1 other chat is still active in this workspace/);
+  assert.doesNotMatch(words(kept.render()), /Workspace “Example workspace” archived/);
+  assert.equal(archiveContracts.workspaceSummary({ id: null, name: null, archived: false, note: null }), "Workspace left in place.");
+});
+test("full session ui: native restore says when the workspace is still archived", async () => {
+  for (const workspaceArchived of [true, false]) {
+    const states: unknown[] = [];
+    const record = { id: "original-chat", title: "Test archived chat", provider: "codex", model: "test", cwd: "project", archivedAt: "2026-11-10T00:00:00Z" };
+    let stateIndex = 0;
+    let mutationDone: Promise<void> | undefined;
+    const module = await loadClient("client/archive-screen.tsx", {
+      react: { useState: (initial: unknown) => {
+        const index = stateIndex++;
+        if (!(index in states)) states[index] = initial;
+        return [states[index], (value: unknown) => { states[index] = value; }];
+      } },
+      "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
+      "@getpaseo/plugin/client/ui": { SidebarRow: "SidebarRow", TextInput: "TextInput" },
+      "@getpaseo/plugin/client": { useRpc: (contract: Props) => async (input: Props) => contract.name === "archive.restore" ? { agentId: input.agentId, workspaceArchived } : { entries: [record] } },
+      "@tanstack/react-query": {
+        useQuery: (config: Props) => ({ data: { entries: [record] }, refetch: config.queryFn }),
+        useMutation: (config: Props) => ({ isPending: false, mutate: (input: Props) => {
+          mutationDone = (async () => { const result = await config.mutationFn(input); await config.onSuccess(result, input); })();
+        } }),
+      },
+      "../shared/archive": archiveContracts,
+      "./archive-files-screen": { ArchiveFilesScreen: () => null },
+    });
+    const render = () => {
+      stateIndex = 0;
+      return expand(module.NativeArchiveScreen({ host: { id: "host", label: "Test host" }, layout: { compact: false }, theme: { colors: {} }, navigation: undefined }));
+    };
+    const restore = elements(render()).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === "Unarchive Test archived chat");
+    assert.ok(restore, "the archive screen must expose an Unarchive button");
+    restore.props.onPress();
+    await mutationDone;
+    const shown = words(render());
+    if (workspaceArchived) {
+      assert.match(shown, /Chat unarchived, but its workspace is still archived, so it has no row in the sidebar/);
+      assert.doesNotMatch(shown, /Chat restored to Paseo/);
+    } else {
+      assert.match(shown, /Chat restored to Paseo\. Its export file is unchanged\./);
+      assert.doesNotMatch(shown, /still archived/);
+    }
+  }
 });

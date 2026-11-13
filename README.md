@@ -30,10 +30,12 @@ Full export panel with workspace defaults:
 
 1. Set your format, folder, and content options in **Export → Defaults**, using **Save for workspace** or **Save for host**. Workspace defaults take precedence.
 2. Open the existing **Export** popup or panel and choose **Archive** next to the Save button. There is no separate Archive composer pill or Pill hub tool. `/archive` and **Save export and archive conversation** in the Command Center also open Export.
-3. Review the inline confirmation and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first.
+3. Review the inline confirmation and choose **Save export and archive**. This uses saved defaults, not unsaved changes in the export form. Wait for the current turn to finish or stop it first. The chat and its own workspace leave the sidebar together, so it no longer shows under its project (for example Random).
 4. Open **Archived chats** in the main sidebar list, alongside History, Search, and Schedules. **Saved export files** is the default view. Select your Markdown or JSON export, review its preview and provider/model, choose an existing working directory, then select **Restore from file**. The Command Center action **Open archived chats** opens the same page.
 
 Archive saves the same Markdown or JSON file as Export before calling Paseo's native soft archive. A failed export leaves the chat active. Clipboard defaults are not accepted for Archive: save a folder destination first. If saving succeeds but native archive fails, the error includes the saved file path and the file is retained. Concurrent archive/restore requests for the same chat through this plugin are rejected until the first completes.
+
+**Archive closes the whole session.** Paseo gives every chat its own workspace row in the sidebar, and archiving only the chat leaves that row behind. After the chat is archived, the plugin also archives the chat's own workspace, which closes that workspace's terminals. It does this only when it is safe: the workspace is kept, and the toast and receipt say why, when another chat is still active in it (Paseo's workspace archive would archive that chat too), when it is a Git worktree or any kind other than a plain folder (Paseo deletes the worktree folder when it archives one), or when it is already archived. If the workspace archive itself fails after the chat is archived, the error says so and includes the saved file path; archive that workspace from the sidebar. A plain folder is never deleted.
 
 The file list scans `~/Paseo Exports`, your current custom default folders, and paths remembered when this version exports or archives. Catalog receipts live under `~/Paseo Exports/.archive-catalog/<host namespace>` and contain file paths, not copies of the conversation. This preserves discovery when defaults change or the plugin reloads. Use **Scan folder** for older session-folder exports or another folder, or enter an absolute file path and choose **Inspect file**. Paths refer to the selected daemon host. Only regular Markdown/JSON exports in this exporter's format are accepted; unrelated files and unreadable or oversized exports produce warnings. Source files are never changed or deleted by importing.
 
@@ -43,7 +45,7 @@ Paseo's provider-import endpoint accepts an existing native provider-session ID,
 
 **Paseo native archives** is a separate, secondary view for unhiding existing sessions with **Unarchive** or **Unarchive and open**. That operation still requires the original record and provider persistence. It is not the file-import path. **Paseo's built-in Archive action does not automatically create an export**; use Archive inside Export for export-before-archive.
 
-Paseo can also archive managed child agents when archiving a parent. Their separate histories are not included in the parent's export, and restoring the parent does not automatically restore its children. Workspace archiving and worktree deletion are not performed by the plugin's archive action. Native unarchive uses Paseo's normal workspace restoration behavior.
+Paseo can also archive managed child agents when archiving a parent. Their separate histories are not included in the parent's export, and restoring the parent does not automatically restore its children. Worktree deletion is never performed by the plugin's archive action. **Restoring a chat natively does not restore its archived workspace**: the plugin SDK can archive a workspace but has no call to bring one back, and unarchiving a chat only restores the chat. A chat inside an archived workspace has no sidebar row, so the native Unarchive screen says so; Paseo offers a Restore action for the workspace when you open the chat from History or with **Unarchive and open**. **Restore from file** is unaffected because it creates a new chat.
 
 ## Saved defaults
 
@@ -100,13 +102,13 @@ Source layout:
 - `server/history.ts`: complete history pagination and consistency checks.
 - `server/markdown.ts`: Markdown formatting and filename generation.
 - `server/export.ts`: JSON formatting, destination selection, and exclusive file writes.
-- `server/archive.ts`: native archive discovery, per-agent operation locks, export-before-archive, and original-session restore.
+- `server/archive.ts`: native archive discovery, per-agent operation locks, export-before-archive, archiving the chat's own workspace when nothing else lives in it, and original-session restore.
 - `server/archive-files.ts`: bounded file reads, format validation, durable host-scoped path catalog, and file-to-context import.
 - `shared/export.ts`: validated RPC contracts.
 - `shared/archive.ts`: validated archive/list/restore contracts.
 - `shared/archive-files.ts`: file metadata, inspection/import contracts, and receipt schema.
 - `tests/export.test.ts`: pagination, format, filtering, error, destination, and save tests.
-- `tests/archive.test.ts`: archive ordering, saved defaults, failure handling, concurrency, directory pagination, and restore tests.
+- `tests/archive.test.ts`: archive ordering, saved defaults, workspace archive and keep rules, failure handling, concurrency, directory pagination, and restore tests.
 - `tests/archive-files.test.ts`: independent file restoration, catalog persistence, invalid inputs, concurrency, and source-file preservation.
 - `tests/export-ui.test.ts`: single-tool registration, inline archive placement in both popup hosts, confirmation, and error-state tests.
 

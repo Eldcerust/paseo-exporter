@@ -17,10 +17,21 @@ async function fixture(t: TestContext) {
     workspaceId: "workspace-1", cwd: directory, createdAt: "2026-11-01T00:00:00Z",
     status: "idle", activeTurn: null as unknown, archivedAt: null as string | null,
   };
-  const calls = { ref: [] as string[], refresh: 0, history: 0, archive: 0, reload: 0 };
+  const calls = { ref: [] as string[], refresh: 0, history: 0, archive: 0, reload: 0, workspaceArchive: 0, order: [] as string[] };
+  // Paseo gives every chat its own workspace row, so the fixture models one plus any siblings.
+  const workspace = { id: "workspace-1", name: "Coffee guide", title: "Coffee guide", workspaceKind: "local_checkout", archived: false };
+  const others: Array<{ id: string; workspaceId: string; archivedAt: string | null; title: string }> = [];
+  const workspaceHandle = {
+    refresh: async () => workspace.archived ? null : { ...workspace },
+    archive: async () => {
+      calls.workspaceArchive++; calls.order.push("workspace.archive");
+      workspace.archived = true;
+      return { requestId: "r", workspaceId: workspace.id, archivedAt: archivedAt as string | null, error: null as string | null };
+    },
+  };
   const handle = {
     refresh: async () => { calls.refresh++; return { agent: { ...agent } }; },
-    archive: async () => { calls.archive++; agent.archivedAt = archivedAt; return { archivedAt }; },
+    archive: async () => { calls.archive++; calls.order.push("agent.archive"); agent.archivedAt = archivedAt; return { archivedAt }; },
     reload: async () => { calls.reload++; agent.archivedAt = null; return { agent: { ...agent } }; },
     timeline: { refetch: async () => {
       calls.history++;
@@ -33,8 +44,19 @@ async function fixture(t: TestContext) {
   const preferences: Preferences = {
     defaults: { ...factoryDefaults, destination: "custom", directory }, workspaces: {},
   };
-  const context = { paseo: { agents: { ref: (id: string) => { calls.ref.push(id); return handle; } } } } as unknown as PluginHandlerContext;
-  return { directory, agent, calls, handle, context, preferences, service: createArchiveService(async () => preferences) };
+  const listRequests: unknown[] = [];
+  const context = { paseo: {
+    agents: {
+      ref: (id: string) => { calls.ref.push(id); return handle; },
+      // Default listing: archived chats are excluded, as the daemon does.
+      list: async (input: unknown) => { listRequests.push(input); return {
+        entries: [agent, ...others].filter((entry) => !entry.archivedAt).map((entry) => ({ agent: entry })),
+        pageInfo: { hasMore: false, nextCursor: null },
+      }; },
+    },
+    workspaces: { ref: (id: string) => { assert.equal(id, workspace.id); return workspaceHandle; } },
+  } } as unknown as PluginHandlerContext;
+  return { directory, agent, calls, handle, workspace, workspaceHandle, others, listRequests, context, preferences, service: createArchiveService(async () => preferences) };
 }
 
 test("archive saves workspace defaults before soft-deleting the original session", async (t) => {
@@ -190,7 +212,7 @@ test("restore reloads the original archived agent without creating or importing 
   const f = await fixture(t);
   f.agent.archivedAt = archivedAt;
   const result = await f.service.restore({ agentId: "chat-1" }, f.context);
-  assert.deepEqual(result, { agentId: "chat-1" });
+  assert.deepEqual(result, { agentId: "chat-1", workspaceArchived: false });
   assert.equal(f.calls.reload, 1);
   assert.equal(f.calls.history, 0);
   assert.equal(f.agent.archivedAt, null);
@@ -214,4 +236,87 @@ test("restore reports deleted sessions, provider errors, and unsuccessful unarch
   await assert.rejects(f.service.restore({ agentId: "chat-1" }, f.context), /persistence missing/);
   f.handle.reload = async () => ({ agent: { ...f.agent } });
   await assert.rejects(f.service.restore({ agentId: "chat-1" }, f.context), /did not restore/);
+});
+test("full session: archives its own workspace after the chat", async (t) => {
+  const f = await fixture(t);
+  const result = await f.service.archive({ agentId: "chat-1" }, f.context);
+  assert.deepEqual(f.calls.order, ["agent.archive", "workspace.archive"]);
+  assert.equal(f.workspace.archived, true);
+  assert.deepEqual(result.workspace, { id: "workspace-1", name: "Coffee guide", archived: true, note: null });
+  assert.equal(result.archivedAt, archivedAt);
+  assert.deepEqual(archiveSession.output.parse(result), result);
+  // The check for other chats must not count the chat that was just archived, and must not hide background chats.
+  assert.deepEqual(f.listRequests[0], { filter: { includeBackground: true }, sort: [{ key: "created_at", direction: "desc" }], page: { limit: 200 } });
+});
+test("full session: keeps the workspace while other chats are active in it", async (t) => {
+  const f = await fixture(t);
+  f.others.push(
+    { id: "sibling", workspaceId: "workspace-1", archivedAt: null, title: "Sibling chat" },
+    { id: "elsewhere", workspaceId: "workspace-2", archivedAt: null, title: "Other workspace" },
+    { id: "gone", workspaceId: "workspace-1", archivedAt, title: "Already archived" },
+  );
+  const result = await f.service.archive({ agentId: "chat-1" }, f.context);
+  assert.equal(f.calls.archive, 1);
+  assert.equal(f.calls.workspaceArchive, 0);
+  assert.equal(f.workspace.archived, false);
+  assert.equal(result.workspace.archived, false);
+  assert.match(result.workspace.note ?? "", /1 other chat is still active in this workspace/);
+  assert.deepEqual(archiveSession.output.parse(result), result);
+});
+test("full session: leaves worktree and unknown workspace kinds alone", async (t) => {
+  for (const kind of ["worktree", "checkout", "something-new"]) {
+    const f = await fixture(t);
+    f.workspace.workspaceKind = kind;
+    const result = await f.service.archive({ agentId: "chat-1" }, f.context);
+    assert.equal(f.calls.archive, 1, kind);
+    assert.equal(f.calls.workspaceArchive, 0, kind);
+    assert.equal(result.workspace.archived, false, kind);
+    assert.match(result.workspace.note ?? "", new RegExp(kind === "worktree" ? "worktree folder" : kind), kind);
+  }
+  for (const kind of ["directory", "local_checkout"]) {
+    const f = await fixture(t);
+    f.workspace.workspaceKind = kind;
+    assert.equal((await f.service.archive({ agentId: "chat-1" }, f.context)).workspace.archived, true, kind);
+  }
+});
+test("full session: workspace archive failure is reported after the chat is archived", async (t) => {
+  const f = await fixture(t);
+  f.workspaceHandle.archive = async () => ({ requestId: "r", workspaceId: "workspace-1", archivedAt: null, error: "Workspace is busy" });
+  await assert.rejects(f.service.archive({ agentId: "chat-1" }, f.context), (error: Error) => {
+    assert.match(error.message, /Export saved to .*chat is archived, but its workspace was not archived: Workspace is busy/);
+    return true;
+  });
+  assert.equal(f.agent.archivedAt, archivedAt);
+  assert.equal((await readdir(f.directory)).length, 1);
+  // A thrown transport error is reported the same way, and the lock is released.
+  f.agent.archivedAt = null;
+  f.workspaceHandle.archive = async () => { throw new Error("Daemon closed the socket"); };
+  await assert.rejects(f.service.archive({ agentId: "chat-1" }, f.context), /workspace was not archived: Daemon closed the socket/);
+});
+test("full session: a missing or already archived workspace is not an error", async (t) => {
+  const f = await fixture(t);
+  f.workspace.archived = true;
+  const result = await f.service.archive({ agentId: "chat-1" }, f.context);
+  assert.equal(f.calls.workspaceArchive, 0);
+  assert.deepEqual({ ...result.workspace, note: undefined }, { id: "workspace-1", name: null, archived: false, note: undefined });
+  assert.match(result.workspace.note ?? "", /already archived/);
+  const noWorkspace = await fixture(t);
+  (noWorkspace.agent as { workspaceId: string | null }).workspaceId = null;
+  const none = await noWorkspace.service.archive({ agentId: "chat-1" }, noWorkspace.context);
+  assert.equal(none.workspace.id, null);
+  assert.equal(none.workspace.archived, false);
+});
+test("full session: restore reports a chat whose workspace is still archived", async (t) => {
+  const f = await fixture(t);
+  f.agent.archivedAt = archivedAt;
+  f.workspace.archived = true;
+  const result = await f.service.restore({ agentId: "chat-1" }, f.context);
+  // The chat comes back, but Paseo's plugin API cannot restore the workspace, so restore says so.
+  assert.deepEqual(result, { agentId: "chat-1", workspaceArchived: true });
+  assert.equal(f.calls.reload, 1);
+  assert.equal(f.agent.archivedAt, null);
+  assert.equal(f.calls.workspaceArchive, 0);
+  assert.deepEqual(restoreArchive.output.parse(result), result);
+  (f.agent as { workspaceId: string | null }).workspaceId = null;
+  assert.deepEqual(await f.service.restore({ agentId: "chat-1" }, f.context), { agentId: "chat-1", workspaceArchived: false });
 });

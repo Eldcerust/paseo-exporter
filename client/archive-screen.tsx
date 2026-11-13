@@ -33,8 +33,10 @@ export function NativeArchiveScreen({ theme, host, layout, navigation }: PluginS
   const archives = useQuery({ queryKey: ["conversation-archives", host.id], queryFn: () => list({}), refetchInterval: 15000 });
   const restoring = useMutation({
     mutationFn: ({ agentId }: { agentId: string; open: boolean }) => restore({ agentId }),
-    onSuccess: async ({ agentId }, input) => {
-      setNotice("Chat restored to Paseo. Its export file is unchanged.");
+    onSuccess: async ({ agentId, workspaceArchived }, input) => {
+      setNotice(workspaceArchived
+        ? "Chat unarchived, but its workspace is still archived, so it has no row in the sidebar. Paseo offers Restore for the workspace when you open the chat from History or with Unarchive and open. Its export file is unchanged."
+        : "Chat restored to Paseo. Its export file is unchanged.");
       await archives.refetch();
       if (input.open) navigation?.openAgent({ agentId });
     },
