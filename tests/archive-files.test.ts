@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { createArchiveFiles, MAX_IMPORT_BYTES, parseArchive, readArchive } from "../server/archive-files";
 import { renderMarkdown } from "../server/markdown";
@@ -31,6 +31,10 @@ async function fixture(t: TestContext) {
   await writeFile(path, content);
   const prefs: Preferences = { defaults: { ...factoryDefaults, destination: "custom", directory: folder }, workspaces: {} };
   const created: unknown[] = [];
+  // Paseo puts a chat made with only a folder in that folder's default workspace ("master"), so the
+  // import makes a workspace first. A workspace's chats are created in the folder it was made for.
+  const workspaceCalls = { created: [] as Array<{ source: { path: string; projectId?: string }; title: string }>, archived: [] as string[] };
+  const projects = [{ id: "workspace-default", projectId: "project-1", projectRootPath: home }];
   const context = {
     paseo: {
       hosts: { list: async () => ({ self: { serverId: "test-host" } }) },
@@ -38,10 +42,22 @@ async function fixture(t: TestContext) {
         ref: () => { throw new Error("Must not depend on the original Paseo record"); },
         create: async (input: unknown) => { created.push(input); return { id: "new-restored-chat" }; },
       },
+      workspaces: {
+        list: async () => ({ entries: projects }),
+        create: async (input: { source: { path: string; projectId?: string }; title: string }) => {
+          workspaceCalls.created.push(input);
+          const id = `workspace-new-${workspaceCalls.created.length}`;
+          return {
+            id,
+            agents: { create: (options: object) => (context.paseo.agents.create as (input: unknown) => Promise<unknown>)({ ...options, cwd: input.source.path }) },
+            archive: async () => { workspaceCalls.archived.push(id); return { requestId: "r", workspaceId: id, archivedAt: "now", error: null }; },
+          };
+        },
+      },
     },
   } as unknown as PluginHandlerContext;
   const service = () => createArchiveFiles(async () => prefs, { home });
-  return { home, folder, path: await resolvePath(path), value, content, prefs, created, context, service };
+  return { home, folder, path: await resolvePath(path), value, content, prefs, created, context, service, workspaceCalls, projects };
 }
 // Canonical path comparisons also work when the Windows temp root contains a junction.
 async function resolvePath(path: string) { const { realpath } = await import("node:fs/promises"); return realpath(path); }
@@ -92,6 +108,50 @@ test("restore from JSON creates a new idle chat with complete context and never 
   assert.match(created.idempotencyKey, /^archive-context-/);
   assert.equal(await readFile(f.path, "utf8"), f.content);
   assert.deepEqual(importArchiveFile.output.parse(result), result);
+});
+test("restore gives the chat its own workspace named with the original title, not the folder's default", async (t) => {
+  const f = await fixture(t);
+  const result = await f.service().import({ path: f.path, provider: "opencode/test", cwd: f.home }, f.context);
+  assert.deepEqual(f.workspaceCalls.created, [{ source: { kind: "directory", path: f.home, projectId: "project-1" }, title: "Saved | conversation" }],
+    "the workspace carries the original title and joins the folder's project");
+  assert.equal((f.created[0] as { title: string }).title, "Restored: Saved | conversation", "the chat keeps its Restored: label");
+  assert.equal(result.warning, undefined);
+  assert.deepEqual(f.workspaceCalls.archived, [], "the new workspace is kept");
+});
+test("restore finds the folder's project despite a trailing slash, and omits the project when there is none", async (t) => {
+  const f = await fixture(t);
+  const service = f.service();
+  await service.import({ path: f.path, provider: "opencode/test", cwd: `${f.home}${sep}`, requestId: "a" }, f.context);
+  assert.equal(f.workspaceCalls.created[0].source.projectId, "project-1");
+  f.projects.length = 0;
+  await service.import({ path: f.path, provider: "opencode/test", cwd: f.home, requestId: "b" }, f.context);
+  assert.deepEqual(f.workspaceCalls.created[1].source, { kind: "directory", path: f.home });
+});
+test("restore falls back to the default workspace with a warning when no workspace can be made", async (t) => {
+  const f = await fixture(t);
+  f.context.paseo.workspaces.create = async () => { throw new Error("The daemon refused"); };
+  const result = await f.service().import({ path: f.path, provider: "opencode/test", cwd: f.home }, f.context);
+  assert.equal(result.agentId, "new-restored-chat", "the chat is still restored");
+  assert.match(result.warning!, /workspace for the restored chat could not be created \(The daemon refused\).*default workspace.*git branch/);
+  assert.equal((f.created[0] as { cwd: string }).cwd, f.home);
+  assert.deepEqual(importArchiveFile.output.parse(result), result);
+});
+test("restore removes the workspace it made when the chat cannot be created", async (t) => {
+  const f = await fixture(t);
+  f.context.paseo.agents.create = async () => { throw new Error("Provider is unavailable"); };
+  await assert.rejects(f.service().import({ path: f.path, provider: "opencode/test", cwd: f.home }, f.context), /Provider is unavailable/);
+  assert.deepEqual(f.workspaceCalls.archived, ["workspace-new-1"], "no empty workspace is left in the sidebar");
+});
+test("a retried restore does not leave an extra workspace behind", async (t) => {
+  const f = await fixture(t);
+  const service = f.service();
+  // The daemon answers a repeated idempotency key with the chat from the first attempt.
+  f.context.paseo.agents.create = async () => ({ id: "first-attempt-chat", refresh: async () => ({ agent: { workspaceId: "workspace-from-first-attempt" } }) }) as never;
+  await service.import({ path: f.path, provider: "opencode/test", cwd: f.home, requestId: "same" }, f.context);
+  assert.deepEqual(f.workspaceCalls.archived, ["workspace-new-1"]);
+  f.context.paseo.agents.create = async () => ({ id: "fresh-chat", refresh: async () => ({ agent: { workspaceId: "workspace-new-2" } }) }) as never;
+  await service.import({ path: f.path, provider: "opencode/test", cwd: f.home, requestId: "other" }, f.context);
+  assert.deepEqual(f.workspaceCalls.archived, ["workspace-new-1"], "a chat in the workspace just made keeps it");
 });
 test("Markdown file restoration also loads the actual saved text without the original chat", async (t) => {
   const f = await fixture(t);

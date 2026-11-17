@@ -2,7 +2,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, extname, isAbsolute, join } from "node:path";
+import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { exportOptions } from "../shared/export";
 import { archiveFile, type ArchiveFile } from "../shared/archive-files";
@@ -16,6 +16,16 @@ const HIT_LIMIT = 400;
 // Searching re-checks the indexed files, but not on every keystroke.
 const REFRESH_INTERVAL_MS = 2000;
 const fingerprint = (info: { size: number; mtimeMs: number }) => `${info.size}:${Math.trunc(info.mtimeMs)}`;
+const sameFolder = (a: string, b: string) => process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+
+// Paseo gives every chat its own workspace row, named after the chat. A chat created with only a folder
+// lands in that folder's default workspace instead, which has no title and is shown under the git branch
+// name ("master"). So a restored chat gets a workspace of its own, named with the original title.
+async function createChatWorkspace(cwd: string, title: string, { paseo }: Context) {
+  const { entries } = await paseo.workspaces.list();
+  const projectId = entries.find((entry) => entry.projectRootPath && sameFolder(entry.projectRootPath, cwd))?.projectId;
+  return paseo.workspaces.create({ source: { kind: "directory", path: cwd, ...(projectId ? { projectId } : {}) }, title });
+}
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 // Fail before creating a chat rather than silently truncating the conversation.
 export const MAX_IMPORT_BYTES = 1024 * 1024;
@@ -183,8 +193,14 @@ export function createArchiveFiles(readPreferences: () => Promise<Preferences>, 
         if (!provider.trim()) throw new Error("Choose the provider/model for the restored chat.");
         // Ensure durable discovery before creating anything in Paseo.
         await remember(file.path, context);
-        const agent = await context.paseo.agents.create({
-          cwd, title: `Restored: ${file.title}`,
+        const notes: string[] = [];
+        let workspace: Awaited<ReturnType<typeof createChatWorkspace>> | null = null;
+        try { workspace = await createChatWorkspace(cwd, file.title, context); }
+        catch (error) {
+          notes.push(`A workspace for the restored chat could not be created (${error instanceof Error ? error.message : String(error)}), so it is in the folder's default workspace, which Paseo names after the git branch.`);
+        }
+        const options = {
+          title: `Restored: ${file.title}`,
           idempotencyKey: `archive-context-${digest(JSON.stringify([file.path, digest(content), provider, cwd, requestId ?? randomUUID()]))}`,
           labels: { "archive.import": "context", "archive.sourceAgentId": file.sourceAgentId },
           config: {
@@ -196,8 +212,21 @@ export function createArchiveFiles(readPreferences: () => Promise<Preferences>, 
             ].join("\n\n"),
           },
           // No prompt: importing must not run a turn or replay archived actions.
-        });
-        let warning: string | undefined;
+        };
+        let agent: Awaited<ReturnType<Context["paseo"]["agents"]["create"]>>;
+        try { agent = workspace ? await workspace.agents.create(options) : await context.paseo.agents.create({ cwd, ...options }); }
+        catch (error) {
+          // The workspace was made only for this chat and is still empty.
+          await workspace?.archive().catch(() => {});
+          throw error;
+        }
+        if (workspace) {
+          try {
+            // A retried import returns the chat from the first attempt, which lives in an earlier workspace.
+            const placed = (await agent.refresh())?.agent.workspaceId;
+            if (placed && placed !== workspace.id) await workspace.archive();
+          } catch { /* an empty extra workspace is only clutter, never a reason to fail the import */ }
+        }
         try {
           if (agent.timeline?.append) await agent.timeline.append({
             id: "archive-context-import", type: "plugin", kind: "archive-context-import", version: 1,
@@ -205,8 +234,9 @@ export function createArchiveFiles(readPreferences: () => Promise<Preferences>, 
           });
         } catch {
           // Creation already succeeded. Do not turn a display-only failure into a retry/duplicate.
-          warning = "The chat was created with the imported context, but its timeline receipt could not be displayed.";
+          notes.push("The chat was created with the imported context, but its timeline receipt could not be displayed.");
         }
+        const warning = notes.join(" ");
         return { agentId: agent.id, mode: "context" as const, path: file.path, ...(warning ? { warning } : {}) };
       } finally { pending.delete(file.path); }
     },
