@@ -6,6 +6,7 @@ import * as contracts from "../shared/export";
 import * as archiveContracts from "../shared/archive";
 import * as settings from "../shared/preferences";
 import * as fileContracts from "../shared/archive-files";
+import * as searchContracts from "../shared/search";
 
 // Execute the real TSX with small host-boundary mocks, without loading React Native in Node.
 type Props = Record<string, any>;
@@ -69,6 +70,8 @@ test("the exporter contributes one Export tool and a discoverable Archived chats
   cleanup();
 });
 
+// The debounce hook settles immediately and the snippet renders as a plain element the tests can read.
+const searchResults = { useDebounced: (value: unknown) => value, Snippet: (props: Props) => jsx("Snippet", props) };
 const archivedWorkspace = { id: "workspace", name: "Example workspace", archived: true, note: null as string | null };
 async function exportHarness({ hosted = false, destination = "exports", status = "idle", failure = "", workspace = archivedWorkspace } = {}) {
   const toasts: string[] = [];
@@ -98,7 +101,7 @@ async function exportHarness({ hosted = false, destination = "exports", status =
         requests.push({ method: contract.name, input });
         if (contract.name === "session.archive") {
           if (failure) throw new Error(failure);
-          return { path: "saved-export.md", entryCount: 2, archivedAt: "now", workspace };
+          return { path: "saved-export.md", entryCount: 2, title: "Example workspace", archivedAt: "now", workspace };
         }
         return values;
       },
@@ -202,7 +205,7 @@ test("the secondary native-archive screen explicitly unarchives existing chats",
           mutationDone = (async () => { const result = await config.mutationFn(input); await config.onSuccess(result, input); })();
         } }),
       },
-      "../shared/archive": archiveContracts,
+      "../shared/archive": archiveContracts, "../shared/search": searchContracts, "./search-results": searchResults,
       "./archive-files-screen": { ArchiveFilesScreen: () => null },
     });
     const sidebar = module.ArchiveSidebarItem({ currentScreen: null, openScreen: (input: unknown) => openedScreens.push(input) }) as Element;
@@ -230,7 +233,7 @@ test("Archived chats opens saved export files by default, not native unarchive",
     react: { useState: (initial: unknown) => [initial, () => {}] },
     "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
     "@getpaseo/plugin/client/ui": { SidebarRow: "SidebarRow", TextInput: "TextInput" },
-    "@getpaseo/plugin/client": {}, "@tanstack/react-query": {}, "../shared/archive": archiveContracts,
+    "@getpaseo/plugin/client": {}, "@tanstack/react-query": {}, "../shared/archive": archiveContracts, "../shared/search": searchContracts, "./search-results": searchResults,
     "./archive-files-screen": { ArchiveFilesScreen: () => jsx("SavedExportFiles", {}) },
   });
   const tree = expand(module.ArchiveScreen({ host: { id: "host" }, theme: { colors: {} } }));
@@ -273,7 +276,7 @@ test("a saved export can be inspected and restored through the file-import RPC i
         return mutation;
       },
     },
-    "../shared/archive-files": fileContracts,
+    "../shared/archive-files": fileContracts, "../shared/search": searchContracts, "./search-results": searchResults,
   });
   function render() {
     stateIndex = mutationIndex = 0;
@@ -306,15 +309,15 @@ test("full session ui: confirmation and receipt name the workspace", async () =>
   assert.match(confirmation, /terminals close with it/);
   assert.match(confirmation, /another chat is still active in the workspace, or it is a Git worktree, the workspace stays/);
   await ui.button(ui.render(false, true), "Save export and archive").onPress();
-  assert.match(words(ui.render(false, true)), /Saved to saved-export\.md\. Workspace “Example workspace” archived\. Open Archived chats/);
-  assert.deepEqual(ui.toasts, ["Chat archived. Saved 2 entries to saved-export.md. Workspace “Example workspace” archived."]);
+  assert.match(words(ui.render(false, true)), /Saved to saved-export\.md as “Example workspace”\. Workspace “Example workspace” archived\. Open Archived chats/);
+  assert.deepEqual(ui.toasts, ["Chat archived as “Example workspace”. Saved 2 entries to saved-export.md. Workspace “Example workspace” archived."]);
 
   const note = "1 other chat is still active in this workspace, so it was kept. Archive the workspace from the sidebar to close them too.";
   const kept = await exportHarness({ workspace: { id: "workspace", name: "Example workspace", archived: false, note } });
   kept.button(kept.render(), "Archive").onPress();
   await kept.button(kept.render(), "Save export and archive").onPress();
-  assert.deepEqual(kept.toasts, [`Chat archived. Saved 2 entries to saved-export.md. ${note}`]);
-  assert.match(words(kept.render()), /Saved to saved-export\.md\. 1 other chat is still active in this workspace/);
+  assert.deepEqual(kept.toasts, [`Chat archived as “Example workspace”. Saved 2 entries to saved-export.md. ${note}`]);
+  assert.match(words(kept.render()), /Saved to saved-export\.md as “Example workspace”\. 1 other chat is still active in this workspace/);
   assert.doesNotMatch(words(kept.render()), /Workspace “Example workspace” archived/);
   assert.equal(archiveContracts.workspaceSummary({ id: null, name: null, archived: false, note: null }), "Workspace left in place.");
 });
@@ -339,7 +342,7 @@ test("full session ui: native restore says when the workspace is still archived"
           mutationDone = (async () => { const result = await config.mutationFn(input); await config.onSuccess(result, input); })();
         } }),
       },
-      "../shared/archive": archiveContracts,
+      "../shared/archive": archiveContracts, "../shared/search": searchContracts, "./search-results": searchResults,
       "./archive-files-screen": { ArchiveFilesScreen: () => null },
     });
     const render = () => {
@@ -359,4 +362,153 @@ test("full session ui: native restore says when the workspace is still archived"
       assert.doesNotMatch(shown, /still archived/);
     }
   }
+});
+
+// ---- Text search in the Archived chats screens ----
+const marker = (word: string) => `${searchContracts.MARK_OPEN}${word}${searchContracts.MARK_CLOSE}`;
+async function searchScreen(kind: "files" | "native", { list, search, debounce = (value: unknown) => value }: { list: Props; search: Props | ((query: string) => Props); debounce?: (value: unknown) => unknown }) {
+  const states: unknown[] = [];
+  const configs: Props[] = [];
+  let stateIndex = 0;
+  const module = await loadClient(kind === "files" ? "client/archive-files-screen.tsx" : "client/archive-screen.tsx", {
+    react: { useState: (initial: unknown) => {
+      const index = stateIndex++;
+      if (!(index in states)) states[index] = initial;
+      return [states[index], (value: unknown) => { states[index] = value; }];
+    } },
+    "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
+    "@getpaseo/plugin/client/ui": { Markdown: "Markdown", SidebarRow: "SidebarRow", TextInput: "TextInput" },
+    "@getpaseo/plugin/client": { useRpc: () => async () => ({}) },
+    "@tanstack/react-query": {
+      useQuery: (config: Props) => { configs.push(config); return { data: /search/.test(String(config.queryKey[0])) ? (typeof search === "function" ? search(config.queryKey[2]) : search) : list, isFetching: false, refetch: async () => {} }; },
+      useMutation: () => ({ isPending: false, isSuccess: false, mutate() {}, reset() {} }),
+    },
+    "../shared/archive": archiveContracts, "../shared/archive-files": fileContracts, "../shared/search": searchContracts,
+    "./search-results": { useDebounced: debounce, Snippet: (props: Props) => jsx("Snippet", props) },
+    "./archive-files-screen": { ArchiveFilesScreen: () => null },
+  });
+  const label = kind === "files" ? "Search saved exports" : "Search archived chats";
+  const component = kind === "files" ? module.ArchiveFilesScreen : module.NativeArchiveScreen;
+  function render() {
+    stateIndex = 0;
+    configs.length = 0;
+    return expand(component({ theme: { colors: {} }, host: { id: "host", label: "Test" }, layout: { compact: true }, navigation: undefined }));
+  }
+  const type = (value: string) => {
+    const box = elements(render()).find((entry) => entry.type === "TextInput" && entry.props.accessibilityLabel === label);
+    assert.ok(box, `Missing ${label}`);
+    box.props.onChangeText(value);
+  };
+  const shown = (tree: unknown) => elements(tree).filter((entry) => entry.type === "Pressable").map((entry) => String(entry.props.accessibilityLabel ?? ""))
+    .flatMap((name) => name.startsWith("Select export: ") ? [name.slice("Select export: ".length)] : name.startsWith("Unarchive ") && !name.startsWith("Unarchive and open") ? [name.slice("Unarchive ".length)] : []);
+  return { render, type, shown, configs, snippets: (tree: unknown) => elements(tree).filter((entry) => entry.type === "Snippet").map((entry) => entry.props.text) };
+}
+const savedFile = (title: string, path: string) => ({ path, title, format: "markdown", provider: "codex", cwd: "C:\\p", entryCount: 2, bytes: 10, sourceAgentId: path, exportedAt: "2026-11-10" });
+
+test("search ui: saved exports show conversation-text matches first, with the matching passage", async () => {
+  const files = [savedFile("Alpha notes", "a.md"), savedFile("Pasta recipe", "b.md"), savedFile("Gamma", "c.md")];
+  const snippet = `…the ${marker("pasta")} was overcooked…`;
+  const screen = await searchScreen("files", {
+    list: { entries: files, warnings: [] },
+    // Like the host, it finds text only for the words it was asked about.
+    search: (query) => ({ available: true, reason: null, hits: query === "pasta" ? [{ path: "c.md", snippet, rank: -2 }] : [] }),
+  });
+  let tree = screen.render();
+  assert.deepEqual(screen.shown(tree), ["Alpha notes", "Pasta recipe", "Gamma"], "an empty box lists everything in order");
+  assert.deepEqual(screen.snippets(tree), []);
+  assert.equal(screen.configs.find((config) => config.queryKey[0] === "archive-file-search")?.enabled, false, "nothing is searched for an empty box");
+
+  screen.type("Pasta");
+  tree = screen.render();
+  assert.deepEqual(screen.shown(tree), ["Gamma", "Pasta recipe"], "the text match comes first, the title-only match follows, the rest is hidden");
+  assert.deepEqual(screen.snippets(tree), [snippet]);
+  assert.match(words(tree), /2 of 3 saved export files on Test/);
+  const searched = screen.configs.find((config) => config.queryKey[0] === "archive-file-search")!;
+  assert.deepEqual(searched.queryKey, ["archive-file-search", "host", "pasta"]);
+  assert.equal(searched.enabled, true);
+  screen.type("zzz");
+  assert.deepEqual(screen.shown(screen.render()), []);
+});
+
+test("search ui: hits found for earlier words are ignored while the box has moved on", async () => {
+  const files = [savedFile("Alpha notes", "a.md"), savedFile("Pasta recipe", "b.md")];
+  const screen = await searchScreen("files", {
+    list: { entries: files, warnings: [] },
+    search: { available: true, reason: null, hits: [{ path: "a.md", snippet: marker("old"), rank: -1 }] },
+    debounce: () => "old",
+  });
+  screen.type("pasta");
+  const tree = screen.render();
+  assert.deepEqual(screen.shown(tree), ["Pasta recipe"]);
+  assert.deepEqual(screen.snippets(tree), []);
+});
+
+test("search ui: a host without a search index says so and keeps matching titles", async () => {
+  const screen = await searchScreen("files", {
+    list: { entries: [savedFile("Pasta recipe", "b.md")], warnings: [] },
+    search: { available: false, reason: "no sqlite here", hits: [] },
+  });
+  screen.type("pasta");
+  const tree = screen.render();
+  assert.deepEqual(screen.shown(tree), ["Pasta recipe"]);
+  assert.match(words(tree), /Text search is unavailable on this host \(no sqlite here\)\. Only titles, paths, and providers are matched\./);
+});
+
+test("search ui: native archives are searched by text, report indexing progress, and keep asking until done", async () => {
+  const entries = [
+    { id: "c1", title: "Router notes", provider: "codex", model: "m", cwd: "C:\\p", archivedAt: "2026-11-10T00:00:00Z" },
+    { id: "c2", title: "Dinner ideas", provider: "codex", model: "m", cwd: "C:\\p", archivedAt: "2026-11-10T00:00:00Z" },
+  ];
+  const snippet = `${marker("pineapple")} pizza`;
+  const screen = await searchScreen("native", {
+    list: { entries },
+    search: { available: true, reason: null, pending: 3, hits: [{ agentId: "c2", snippet, rank: -3 }] },
+  });
+  let tree = screen.render();
+  assert.deepEqual(screen.shown(tree), ["Router notes", "Dinner ideas"]);
+  const empty = screen.configs.find((config) => config.queryKey[0] === "archive-text-search")!;
+  assert.notEqual(empty.enabled, false, "even with an empty box the host indexes the next batch");
+  assert.equal(empty.refetchInterval({ state: { data: { pending: 3 } } }), 700);
+  assert.equal(empty.refetchInterval({ state: { data: { pending: 0 } } }), false);
+  assert.equal(empty.refetchInterval({ state: {} }), false);
+
+  screen.type("pineapple");
+  tree = screen.render();
+  assert.deepEqual(screen.shown(tree), ["Dinner ideas"]);
+  assert.deepEqual(screen.snippets(tree), [snippet]);
+  assert.match(words(tree), /Indexing 3 archived chats so their text can be searched\. Results may be incomplete until this finishes\./);
+  assert.match(words(tree), /1 of 2 archived chats/);
+  assert.deepEqual(screen.configs.find((config) => config.queryKey[0] === "archive-text-search")!.queryKey, ["archive-text-search", "host", "pineapple"]);
+});
+
+test("search ui: the snippet highlights matches and the debounce settles after a pause", async () => {
+  const states: unknown[] = [];
+  const cleanups: Array<() => void> = [];
+  let stateIndex = 0;
+  const module = await loadClient("client/search-results.tsx", {
+    react: {
+      useState: (initial: unknown) => {
+        const index = stateIndex++;
+        if (!(index in states)) states[index] = initial;
+        return [states[index], (value: unknown) => { states[index] = value; }];
+      },
+      useEffect: (effect: () => () => void) => { cleanups.push(effect()); },
+    },
+    "react-native": { Text: "Text" },
+    "../shared/search": searchContracts,
+  });
+  const parts = elements(expand(module.Snippet({ text: `a ${marker("b")}\nc`, color: "muted", highlight: "strong" }))).filter((entry) => entry.type === "Text");
+  assert.deepEqual(parts.slice(1).map((entry) => [entry.props.children, entry.props.style]), [
+    ["a ", undefined], ["b", { color: "strong", fontWeight: "700" }], [" c", undefined],
+  ]);
+
+  const hook = (value: string) => { stateIndex = 0; return module.useDebounced(value, 20); };
+  assert.equal(hook("a"), "a");
+  assert.equal(hook("ab"), "a", "a new value is not used straight away");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(hook("ab"), "ab", "it is used once the box stops changing");
+  hook("abc");
+  cleanups.at(-1)!();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(hook("abc"), "ab", "typing on cancels the earlier pending update");
 });

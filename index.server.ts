@@ -3,9 +3,9 @@ import { exportSession, saveExport } from "./shared/export";
 import { preferences, readPreferences } from "./shared/preferences";
 import { createExport, saveSession } from "./server/export";
 import { createArchiveService } from "./server/archive";
-import { archiveSession, listArchives, restoreArchive } from "./shared/archive";
+import { archiveSession, listArchives, restoreArchive, searchArchives } from "./shared/archive";
 import { createArchiveFiles } from "./server/archive-files";
-import { listArchiveFiles, inspectArchiveFile, importArchiveFile } from "./shared/archive-files";
+import { listArchiveFiles, inspectArchiveFile, importArchiveFile, searchArchiveFiles } from "./shared/archive-files";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(preferences);
@@ -26,9 +26,12 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listArchiveFiles, files.list);
   server.handle(inspectArchiveFile, files.inspect);
   server.handle(importArchiveFile, files.import);
-  const archive = createArchiveService(read, files.remember);
+  server.handle(searchArchiveFiles, files.search);
+  // One search index, shared by the saved-file list and the native archive list.
+  const archive = createArchiveService(read, files.remember, files.index);
   server.handle(archiveSession, archive.archive);
   server.handle(listArchives, archive.list);
   server.handle(restoreArchive, archive.restore);
+  server.handle(searchArchives, archive.search);
   return () => {};
 }

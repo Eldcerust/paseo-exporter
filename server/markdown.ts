@@ -38,7 +38,7 @@ function renderItem(item: AgentTimelineItem, options: ExportOptions): { role: st
   }
 }
 export interface SessionMetadata {
-  id: string; title: string | null; provider: string; model: string | null;
+  id: string; title: string | null; projectTitle?: string | null; chatTitle?: string | null; provider: string; model: string | null;
   reasoningEffort?: string | null; thinkingOptionId?: string | null; effectiveThinkingOptionId?: string | null;
   configuredProvider?: string; configuredModel?: string | null;
   cwd: string; createdAt: string; status: string;
@@ -52,7 +52,7 @@ export function renderMarkdown(agent: SessionMetadata, entries: HistoryEntry[], 
     `# ${inline(agent.title || "Paseo conversation")}`,
     "",
     "| Session | Value |", "| --- | --- |",
-    ...Object.entries({ "Agent ID": agent.id, Provider: agent.provider, Model: agent.model ?? "Not reported", "Reasoning effort": agent.reasoningEffort ?? "Not reported", "Configured provider": agent.configuredProvider ?? agent.provider, "Configured model": agent.configuredModel ?? agent.model ?? "Not reported", "Configured effort": agent.thinkingOptionId ?? "Default / not reported", Directory: agent.cwd, Created: agent.createdAt, Exported: exportedAt, Status: agent.status, "History entries": String(entries.length) })
+    ...Object.entries({ "Agent ID": agent.id, ...(agent.projectTitle ? { "Project title": agent.projectTitle, "Chat title": agent.chatTitle ?? "Not reported" } : {}), Provider: agent.provider, Model: agent.model ?? "Not reported", "Reasoning effort": agent.reasoningEffort ?? "Not reported", "Configured provider": agent.configuredProvider ?? agent.provider, "Configured model": agent.configuredModel ?? agent.model ?? "Not reported", "Configured effort": agent.thinkingOptionId ?? "Default / not reported", Directory: agent.cwd, Created: agent.createdAt, Exported: exportedAt, Status: agent.status, "History entries": String(entries.length) })
       .map(([key, value]) => `| ${key} | ${inline(value)} |`),
     "",
     "> Snapshot of the history available from Paseo at export time. Active turns may be incomplete; content removed by provider retention or compaction cannot be recovered. Attachments are represented only as exposed in the timeline.",

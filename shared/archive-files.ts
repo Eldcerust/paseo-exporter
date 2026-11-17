@@ -13,6 +13,16 @@ export const listArchiveFiles = defineRpc({
   name: "archive.files.list", input: z.object({ directory: z.string().trim().max(4096).optional() }),
   output: z.object({ entries: z.array(archiveFile), warnings: z.array(z.string()) }),
 });
+// Text search over the saved files. `available: false` means this host has no search index (the
+// runtime lacks node:sqlite), so the screen falls back to matching titles, paths, and providers.
+// A hit's snippet marks each matched word with the characters in shared/search.ts.
+export const searchArchiveFiles = defineRpc({
+  name: "archive.files.search", input: z.object({ query: z.string().max(200) }),
+  output: z.object({
+    available: z.boolean(), reason: z.string().nullable(),
+    hits: z.array(z.object({ path: z.string(), snippet: z.string(), rank: z.number() })),
+  }),
+});
 export const inspectArchiveFile = defineRpc({
   name: "archive.files.inspect", input: fileInput,
   output: z.object({ file: archiveFile, content: z.string() }),

@@ -5,11 +5,18 @@ import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { exportOptions } from "../shared/export";
-import type { ArchiveFile } from "../shared/archive-files";
+import { archiveFile, type ArchiveFile } from "../shared/archive-files";
 import type { Preferences } from "../shared/preferences";
 import { destinationDirectory } from "./export";
+import { createSearchIndexProvider, hostCatalogDirectory, type SearchIndex, type SearchIndexProvider } from "./search-index";
+import { cleanText, searchableBody } from "./search-text";
 
 type Context = PluginHandlerContext;
+const HIT_LIMIT = 400;
+// Searching re-checks the indexed files, but not on every keystroke.
+const REFRESH_INTERVAL_MS = 2000;
+const fingerprint = (info: { size: number; mtimeMs: number }) => `${info.size}:${Math.trunc(info.mtimeMs)}`;
+const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 // Fail before creating a chat rather than silently truncating the conversation.
 export const MAX_IMPORT_BYTES = 1024 * 1024;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -71,11 +78,29 @@ export async function readArchive(path: string) {
   } finally { await handle.close(); }
 }
 
-export function createArchiveFiles(readPreferences: () => Promise<Preferences>, { home = homedir(), catalogRoot = join(home, "Paseo Exports", ".archive-catalog") }: { home?: string; catalogRoot?: string } = {}) {
+export function createArchiveFiles(readPreferences: () => Promise<Preferences>, { home = homedir(), catalogRoot = join(home, "Paseo Exports", ".archive-catalog"), index: provider = createSearchIndexProvider({ catalogRoot }), refreshIntervalMs = REFRESH_INTERVAL_MS }: { home?: string; catalogRoot?: string; index?: SearchIndexProvider; refreshIntervalMs?: number } = {}) {
   const pending = new Set<string>();
-  async function catalog(context: Context) {
-    const { self } = await context.paseo.hosts.list();
-    return join(catalogRoot, digest(self.serverId).slice(0, 24));
+  let refreshedAt = 0;
+  const catalog = (context: Context) => hostCatalogDirectory(catalogRoot, context);
+  // Search is an extra. Whatever goes wrong with the index, listing and restoring files must still work.
+  const withIndex = <T>(context: Context, work: (index: SearchIndex | null) => Promise<T>) => provider.use(context, work);
+  const fileDocument = (file: ArchiveFile, content: string, stamp: string) => ({
+    kind: "file" as const, key: file.path, agentId: file.sourceAgentId, title: cleanText(file.title), stamp, sortKey: file.exportedAt, payload: JSON.stringify(file),
+    meta: cleanText([file.provider, file.cwd, file.path, file.sourceAgentId, file.format].join("\n")), body: searchableBody(content, file.format),
+  });
+  // Metadata for one export file. The index answers when the file is unchanged, so a listing reads
+  // only new or edited exports instead of every file in full each time.
+  async function describe(path: string, index: SearchIndex | null): Promise<ArchiveFile> {
+    const canonical = await realpath(path);
+    if (!index) return (await readArchive(canonical)).file;
+    const stamp = fingerprint(await stat(canonical));
+    try {
+      const cached = index.stamp("file", canonical) === stamp ? index.payload("file", canonical) : undefined;
+      if (cached) return archiveFile.parse(JSON.parse(cached));
+    } catch { /* an unreadable cache entry is read again below */ }
+    const { file, content } = await readArchive(canonical);
+    try { index.put(fileDocument(file, content, stamp)); } catch { /* the next listing retries */ }
+    return file;
   }
   async function remember(path: string, context: Context) {
     const canonical = await realpath(path);
@@ -87,10 +112,27 @@ export function createArchiveFiles(readPreferences: () => Promise<Preferences>, 
       await writeFile(temporary, JSON.stringify({ version: 1, path: canonical }), { flag: "wx", mode: 0o600 });
       await rename(temporary, target);
     } finally { await rm(temporary, { force: true }); }
+    // Searchable as soon as it is saved. A failure here never fails the export or the archive.
+    try { await withIndex(context, async (index) => { if (index) await describe(canonical, index); }); }
+    catch { /* listed and indexed on the next scan */ }
   }
   return {
     remember,
+    /** The search index this service uses, so the native archive service can share it. */
+    index: provider,
     inspect: ({ path }: { path: string }) => readArchive(path),
+    search: ({ query }: { query: string }, context: Context) => withIndex(context, async (index) => {
+      if (!index) return { available: false, reason: provider.reason() ?? "Text search is not available on this host.", hits: [] };
+      if (Date.now() - refreshedAt >= refreshIntervalMs) {
+        refreshedAt = Date.now();
+        // Pick up exports edited or deleted since they were indexed. Finding new files is the listing's job.
+        for (const key of index.keys("file")) {
+          try { if (fingerprint(await stat(key)) !== index.stamp("file", key)) await describe(key, index); }
+          catch (error) { if (missing(error)) { try { index.remove("file", key); } catch { /* retried next time */ } } }
+        }
+      }
+      return { available: true, reason: null, hits: index.search(query, "file", HIT_LIMIT).map((hit) => ({ path: hit.key, snippet: hit.snippet, rank: hit.rank })) };
+    }),
     async list({ directory }: { directory?: string }, context: Context) {
       const values = await readPreferences();
       const paths = new Set<string>();
@@ -116,10 +158,20 @@ export function createArchiveFiles(readPreferences: () => Promise<Preferences>, 
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`Cannot read folder ${folder}: ${String(error)}`); }
       }
       const entries = new Map<string, ArchiveFile>();
-      for (const path of paths) {
-        try { const { file } = await readArchive(path); entries.set(file.path, file); }
-        catch (error) { warnings.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
-      }
+      await withIndex(context, async (index) => {
+        for (const path of paths) {
+          try { const file = await describe(path, index); entries.set(file.path, file); }
+          catch (error) { warnings.push(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
+        }
+        if (!index) return;
+        // Forget exports that were deleted from disk. One that merely was not scanned this time stays.
+        try {
+          for (const key of index.keys("file")) {
+            if (entries.has(key)) continue;
+            try { await stat(key); } catch (error) { if (missing(error)) index.remove("file", key); }
+          }
+        } catch { /* pruning is housekeeping */ }
+      });
       return { entries: [...entries.values()].sort((a, b) => b.exportedAt.localeCompare(a.exportedAt)), warnings };
     },
     async import({ path, provider, cwd, requestId }: { path: string; provider: string; cwd: string; requestId?: string }, context: Context) {

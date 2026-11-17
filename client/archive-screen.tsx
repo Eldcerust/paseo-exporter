@@ -3,7 +3,9 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { type PluginScreenProps, type PluginSidebarItemProps, useRpc } from "@getpaseo/plugin/client";
 import { SidebarRow, TextInput } from "@getpaseo/plugin/client/ui";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { listArchives, restoreArchive } from "../shared/archive";
+import { listArchives, restoreArchive, searchArchives } from "../shared/archive";
+import { searchMatches } from "../shared/search";
+import { Snippet, useDebounced } from "./search-results";
 import { ArchiveFilesScreen } from "./archive-files-screen";
 
 export function ArchiveSidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
@@ -27,6 +29,7 @@ function ArchiveSources(props: PluginScreenProps) {
 }
 export function NativeArchiveScreen({ theme, host, layout, navigation }: PluginScreenProps) {
   const list = useRpc(listArchives);
+  const searchText = useRpc(searchArchives);
   const restore = useRpc(restoreArchive);
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
@@ -46,13 +49,24 @@ export function NativeArchiveScreen({ theme, host, layout, navigation }: PluginS
   const text = { color: colors.foreground };
   const muted = { color: colors.foregroundMuted, fontSize: 12 };
   const needle = search.trim().toLowerCase();
-  const entries = (archives.data?.entries ?? []).filter((entry) => [entry.title, entry.id, entry.cwd, entry.provider, entry.model].some((value) => value?.toLowerCase().includes(needle)));
+  const settled = useDebounced(needle);
+  // Reading a chat's history costs a round trip per page, so the host indexes archived chats a few at a
+  // time. Even with an empty box this call indexes the next batch, and it repeats while chats are pending,
+  // so the text of every archived chat becomes searchable shortly after this view opens.
+  const found = useQuery({
+    queryKey: ["archive-text-search", host.id, settled], queryFn: () => searchText({ query: settled }), staleTime: 5000,
+    refetchInterval: (query) => (query.state.data?.pending ? 700 : false),
+  });
+  // Hits belong to the words they were searched for, so they are ignored while the box has moved on.
+  const textHits = found.data && settled === needle ? found.data : undefined;
+  const hitFor = new Map((textHits?.hits ?? []).map((hit) => [hit.agentId, hit]));
+  const entries = searchMatches(archives.data?.entries ?? [], needle, (entry, word) => [entry.title, entry.id, entry.cwd, entry.provider, entry.model].some((value) => value?.toLowerCase().includes(word)), (entry) => hitFor.get(entry.id));
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 24, gap: 16 }}>
     <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Paseo native archives</Text>
     <Text style={text}>This separate list unhides existing Paseo sessions on {host.label}. To import a saved Markdown or JSON file, choose Saved export files above.</Text>
     <View style={{ flexDirection: layout.compact ? "column" : "row", gap: 8 }}>
       <TextInput accessibilityLabel="Search archived chats" value={search} onChangeText={setSearch} autoCapitalize="none" autoCorrect={false}
-        placeholder="Search title, provider, folder, or ID" placeholderTextColor={colors.foregroundMuted}
+        placeholder="Search title, conversation text, provider, folder, or ID" placeholderTextColor={colors.foregroundMuted}
         style={{ ...text, flex: layout.compact ? undefined : 1, padding: 12, borderRadius: 8, backgroundColor: colors.surface1 }} />
       <Pressable accessibilityRole="button" disabled={archives.isFetching} onPress={() => void archives.refetch()} style={{ padding: 12, backgroundColor: colors.surface1, borderRadius: 8 }}>
         <Text style={text}>{archives.isFetching ? "Refreshing…" : "Refresh"}</Text>
@@ -62,12 +76,15 @@ export function NativeArchiveScreen({ theme, host, layout, navigation }: PluginS
     {restoring.error && <Text accessibilityRole="alert" selectable style={text}>{restoring.error.message}</Text>}
     {!!notice && <Text accessibilityLiveRegion="polite" style={text}>{notice}</Text>}
     {archives.isPending ? <Text style={muted}>Loading archived chats…</Text> : archives.data && <Text style={muted}>{entries.length} of {archives.data.entries.length} archived chats</Text>}
+    {textHits && !textHits.available && <Text style={muted}>Text search is unavailable on this host{textHits.reason ? ` (${textHits.reason})` : ""}. Only titles, providers, folders, and IDs are matched.</Text>}
+    {!!textHits?.pending && <Text accessibilityLiveRegion="polite" style={muted}>Indexing {textHits.pending} archived chat{textHits.pending === 1 ? "" : "s"} so their text can be searched. Results may be incomplete until this finishes.</Text>}
     {archives.data && !entries.length && <Text style={muted}>{needle ? "No archived chats match your search." : "No archived chats on this host."}</Text>}
     {entries.map((entry) => <View key={entry.id} style={{ padding: 16, borderRadius: 10, backgroundColor: colors.surface1, gap: 8 }}>
       <Text style={{ ...text, fontWeight: "600", fontSize: 16 }}>{entry.title || "Untitled chat"}</Text>
       <Text style={muted}>{entry.provider}{entry.model ? ` · ${entry.model}` : ""} · Archived {new Date(entry.archivedAt).toLocaleString()}</Text>
       <Text selectable style={muted}>{entry.cwd}</Text>
       <Text selectable style={muted}>{entry.id}</Text>
+      {hitFor.has(entry.id) && <Snippet text={hitFor.get(entry.id)!.snippet} color={colors.foregroundMuted} highlight={colors.foreground} />}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {(navigation ? [false, true] : [false]).map((open) => <Pressable key={String(open)} accessibilityRole="button"
           accessibilityLabel={`${open ? "Unarchive and open" : "Unarchive"} ${entry.title || entry.id}`} disabled={restoring.isPending}

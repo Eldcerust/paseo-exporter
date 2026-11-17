@@ -3,12 +3,15 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { type PluginScreenProps, useRpc } from "@getpaseo/plugin/client";
 import { Markdown, TextInput } from "@getpaseo/plugin/client/ui";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { importArchiveFile, inspectArchiveFile, listArchiveFiles } from "../shared/archive-files";
+import { importArchiveFile, inspectArchiveFile, listArchiveFiles, searchArchiveFiles } from "../shared/archive-files";
+import { searchMatches } from "../shared/search";
+import { Snippet, useDebounced } from "./search-results";
 
 export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginScreenProps) {
   const list = useRpc(listArchiveFiles);
   const inspect = useRpc(inspectArchiveFile);
   const restore = useRpc(importArchiveFile);
+  const searchText = useRpc(searchArchiveFiles);
   const [search, setSearch] = useState("");
   const [directory, setDirectory] = useState("");
   const [scanDirectory, setScanDirectory] = useState("");
@@ -44,13 +47,20 @@ export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginSc
       placeholder={placeholder} placeholderTextColor={colors.foregroundMuted} style={{ ...text, padding: 12, backgroundColor: colors.surface1, borderRadius: 8 }} />;
   }
   const needle = search.trim().toLowerCase();
-  const entries = (files.data?.entries ?? []).filter((file) => [file.title, file.path, file.provider].some((value) => value.toLowerCase().includes(needle)));
+  const settled = useDebounced(needle);
+  // The index searches the saved conversation text. The title/path/provider check below still runs
+  // instantly while typing, and still finds partial words the index does not.
+  const found = useQuery({ queryKey: ["archive-file-search", host.id, settled], queryFn: () => searchText({ query: settled }), enabled: !!settled, staleTime: 5000 });
+  // Hits belong to the words they were searched for, so they are ignored while the box has moved on.
+  const textHits = found.data && settled === needle ? found.data : undefined;
+  const hitFor = new Map((textHits?.hits ?? []).map((hit) => [hit.path, hit]));
+  const entries = searchMatches(files.data?.entries ?? [], needle, (file, word) => [file.title, file.path, file.provider].some((value) => value.toLowerCase().includes(word)), (file) => hitFor.get(file.path));
   return <ScrollView style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: layout.compact ? 16 : 24, gap: 16 }}>
     <Text accessibilityRole="header" style={{ ...text, fontSize: 22, fontWeight: "600" }}>Archived chats · Export files</Text>
     <Text style={text}>Restore a saved Markdown or JSON conversation into a new Paseo chat, even when the original chat no longer exists.</Text>
     <Text style={muted}>Context import: the exported conversation is loaded as historical context for your next message. It does not recreate separate old message bubbles or provider state. No prompt is submitted and old commands are not replayed during import. The context may be sent to your selected agent provider when you use the new chat.</Text>
     <View style={{ gap: 8 }}>
-      {input("Search saved exports", search, setSearch, "Search saved exports")}
+      {input("Search saved exports", search, setSearch, "Search titles and conversation text")}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{button(files.isFetching ? "Refreshing…" : "Refresh files", () => void files.refetch(), files.isFetching || busy)}</View>
       {input("Additional host folder to scan", directory, setDirectory, "Optional: absolute export folder on this host")}
       {button("Scan folder", () => { if (directory.trim() === scanDirectory) void files.refetch(); else setScanDirectory(directory.trim()); })}
@@ -84,12 +94,14 @@ export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginSc
     </View>}
     {files.error && <Text accessibilityRole="alert" selectable style={text}>{files.error.message}</Text>}
     {files.isPending && <Text style={muted}>Finding saved conversation exports…</Text>}
-    {files.data && <Text style={muted}>{entries.length} of {files.data.entries.length} saved export files on {host.label}</Text>}
+    {files.data && <Text style={muted}>{entries.length} of {files.data.entries.length} saved export files on {host.label}{needle && found.isFetching ? " · searching conversation text…" : ""}</Text>}
+    {textHits && !textHits.available && <Text style={muted}>Text search is unavailable on this host{textHits.reason ? ` (${textHits.reason})` : ""}. Only titles, paths, and providers are matched.</Text>}
     {files.data && !entries.length && <Text style={muted}>No matching saved exports found. Scan the folder containing your exports or enter the export file’s absolute path above. Session-folder exports made before file indexing may need a folder scan.</Text>}
     {entries.map((file) => <View key={file.path} style={{ padding: 16, borderRadius: 10, backgroundColor: colors.surface1, gap: 8 }}>
       <Text style={{ ...text, fontWeight: "600" }}>{file.title}</Text>
       <Text style={muted}>{file.provider} · {file.format} · {file.entryCount} entries · {file.exportedAt}</Text>
       <Text selectable style={muted}>{file.path}</Text>
+      {hitFor.has(file.path) && <Snippet text={hitFor.get(file.path)!.snippet} color={colors.foregroundMuted} highlight={colors.foreground} />}
       {button(`Select export: ${file.title}`, () => selected.mutate(file.path))}
     </View>)}
     {files.data?.warnings.map((warning, index) => <Text key={index} selectable style={muted}>{warning}</Text>)}

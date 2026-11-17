@@ -74,7 +74,7 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
   const archiving = useMutation({
     mutationFn: () => archive({ agentId }),
     onSuccess: (result) => {
-      toast.show(`Chat archived. Saved ${result.entryCount} entries to ${result.path}. ${workspaceSummary(result.workspace)}`, { variant: "success" });
+      toast.show(`Chat archived${result.title ? ` as “${result.title}”` : ""}. Saved ${result.entryCount} entries to ${result.path}. ${workspaceSummary(result.workspace)}`, { variant: "success" });
       onArchived?.();
     },
   });
@@ -106,7 +106,7 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
   }
   const content = <View style={{ padding: popover ? 0 : layout.compact ? 16 : 24, gap: 12 }}>
     <Text accessibilityRole="header" style={{ ...text, fontSize: 18, fontWeight: "600" }}>Export conversation</Text>
-    <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{agent?.title || agentId}</Text>
+    <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{workspace?.title || agent?.title || agentId}</Text>
     <Text style={{ ...text, fontSize: 12, fontWeight: "600" }}>Format</Text>
     <View accessibilityRole="radiogroup" style={{ flexDirection: "row", gap: 8 }}>
       {(["markdown", "json"] as const).map((value) => <Pressable key={value} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: format === value, disabled: busy }} onPress={() => { setFormat(value); reset(); }} style={{ flex: 1, padding: 9, borderRadius: 8, backgroundColor: format === value ? colors.accent : colors.surface1 }}>
@@ -154,7 +154,7 @@ function SessionExport({ agentId, workspaceId, theme, layout, host, initialDefau
         {action("Cancel", () => setShowArchive(false))}
       </View>
       {archiving.error && <Text accessibilityRole="alert" selectable style={text}>{archiving.error.message}</Text>}
-      {archiving.data && <Text accessibilityLiveRegion="polite" selectable style={text}>{`Saved to ${archiving.data.path}. ${workspaceSummary(archiving.data.workspace)} Open Archived chats in the sidebar to restore this chat.`}</Text>}
+      {archiving.data && <Text accessibilityLiveRegion="polite" selectable style={text}>{`Saved to ${archiving.data.path}${archiving.data.title ? ` as “${archiving.data.title}”` : ""}. ${workspaceSummary(archiving.data.workspace)} Open Archived chats in the sidebar to restore this chat.`}</Text>}
     </View>}
     <Pressable accessibilityRole="button" accessibilityState={{ expanded: showDefaults }} onPress={() => setShowDefaults(!showDefaults)} style={{ paddingVertical: 4 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{showDefaults ? "▾" : "▸"} Defaults · {hasWorkspaceDefaults ? "workspace" : "host"}</Text>
