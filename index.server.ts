@@ -3,7 +3,7 @@ import { exportSession, saveExport } from "./shared/export";
 import { preferences, readPreferences } from "./shared/preferences";
 import { createExport, saveSession } from "./server/export";
 import { createArchiveService } from "./server/archive";
-import { archiveSession, listArchives, restoreArchive, searchArchives } from "./shared/archive";
+import { archiveSession, checkArchive, listArchives, restoreArchive, searchArchives } from "./shared/archive";
 import { createArchiveFiles } from "./server/archive-files";
 import { listArchiveFiles, inspectArchiveFile, importArchiveFile, searchArchiveFiles, listArchiveModels } from "./shared/archive-files";
 
@@ -31,6 +31,7 @@ export default function contribute(server: PluginServerContext) {
   // One search index, shared by the saved-file list and the native archive list.
   const archive = createArchiveService(read, files.remember, files.index);
   server.handle(archiveSession, archive.archive);
+  server.handle(checkArchive, archive.check);
   server.handle(listArchives, archive.list);
   server.handle(restoreArchive, archive.restore);
   server.handle(searchArchives, archive.search);

@@ -74,7 +74,7 @@ test("the exporter contributes one Export tool and a discoverable Archived chats
 // The debounce hook settles immediately and the snippet renders as a plain element the tests can read.
 const searchResults = { useDebounced: (value: unknown) => value, Snippet: (props: Props) => jsx("Snippet", props) };
 const archivedWorkspace = { id: "workspace", name: "Example workspace", archived: true, note: null as string | null };
-async function exportHarness({ hosted = false, destination = "exports", status = "idle", failure = "", workspace = archivedWorkspace } = {}) {
+async function exportHarness({ hosted = false, destination = "exports", status = "idle", failure = "", workspace = archivedWorkspace, readiness = { canExport: true, skippable: false, reason: null as string | null } } = {}) {
   const toasts: string[] = [];
   const states: unknown[] = [];
   const mutations: Props[] = [];
@@ -102,13 +102,15 @@ async function exportHarness({ hosted = false, destination = "exports", status =
         requests.push({ method: contract.name, input });
         if (contract.name === "session.archive") {
           if (failure) throw new Error(failure);
+          // Archiving without an export saves no file, so the receipt has no path or entry count.
+          if ((input as Props | undefined)?.skipExport) return { path: null, entryCount: null, title: "Example workspace", archivedAt: "now", workspace };
           return { path: "saved-export.md", entryCount: 2, title: "Example workspace", archivedAt: "now", workspace };
         }
         return values;
       },
     },
     "@tanstack/react-query": {
-      useQuery: () => ({ data: values }),
+      useQuery: (config: Props) => config.queryKey?.[0] === "archive-check" ? { data: readiness } : { data: values },
       useMutation: (config: Props) => {
         const index = mutationIndex++;
         const mutation = mutations[index] ??= { isPending: false, isSuccess: false, reset() {} };
@@ -183,6 +185,30 @@ test("inline archive retains the export popover and displays failures", async ()
   await ui.button(ui.render(), "Save export and archive").onPress();
   assert.equal(ui.isClosed(), false);
   assert.ok(ui.elements(ui.render()).some((entry) => entry.props.accessibilityRole === "alert" && entry.props.children === "Folder is not writable"));
+});
+// Paseo archives a chat whose provider is switched off but will not serve its history, so no export can be saved.
+const providerBlocked = "This chat uses the opencode provider, which is not enabled or not ready on this host, so Paseo cannot read its history and no export can be saved.";
+test("inline archive offers to archive without an export when the provider is the only blocker", async () => {
+  const ui = await exportHarness({ readiness: { canExport: false, skippable: true, reason: providerBlocked } });
+  ui.button(ui.render(), "Archive").onPress();
+  const confirmation = ui.render();
+  assert.ok(ui.elements(confirmation).some((entry) => entry.props.accessibilityRole === "alert" && entry.props.children === providerBlocked));
+  assert.equal(ui.elements(confirmation).some((entry) => entry.props.accessibilityLabel === "Save export and archive"), false, "an export that cannot succeed is not offered");
+  assert.equal(ui.button(confirmation, "Archive without export").disabled, false);
+  await ui.button(ui.render(), "Archive without export").onPress();
+  assert.deepEqual(ui.requests, [{ method: "session.archive", input: { agentId: "chat", skipExport: true } }]);
+  assert.equal(ui.isClosed(), true);
+  assert.match(ui.toasts[ui.toasts.length - 1]!, /No export was saved/, "the toast must not claim a file was saved");
+});
+test("inline archive stays blocked when the history is unreadable for a reason other than the provider", async () => {
+  const reason = "Paseo could not read this chat's history: Permission denied";
+  const ui = await exportHarness({ readiness: { canExport: false, skippable: false, reason } });
+  ui.button(ui.render(), "Archive").onPress();
+  const confirmation = ui.render();
+  assert.ok(ui.elements(confirmation).some((entry) => entry.props.children === reason));
+  assert.equal(ui.elements(confirmation).some((entry) => entry.props.accessibilityLabel === "Archive without export"), false);
+  assert.equal(ui.button(confirmation, "Save export and archive").disabled, true);
+  assert.deepEqual(ui.requests, []);
 });
 
 test("the secondary native-archive screen explicitly unarchives existing chats", async () => {

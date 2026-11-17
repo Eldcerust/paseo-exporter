@@ -124,6 +124,7 @@ test("title: archive saves the project title before it closes the workspace, and
   assert.equal(result.title, "Sky colour explained");
   assert.equal(result.workspace.archived, true);
   assert.deepEqual(archiveSession.output.parse(result), result);
+  assert.ok(result.path);
   assert.match(await readFile(result.path, "utf8"), /^# Sky colour explained$/m);
   // This is why the title is read first: once the workspace is archived the daemon no longer returns it.
   assert.equal(await readProjectTitle("ws-chat-1", d.context), null);

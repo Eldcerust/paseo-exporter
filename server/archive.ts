@@ -19,6 +19,24 @@ const INDEX_CONCURRENCY = 4;
 const RETRY_FAILED_AFTER_MS = 5 * 60_000;
 const HIT_LIMIT = 400;
 
+// Paseo will not serve a chat's history, prompts or commands while its provider is switched off, but it still
+// archives that chat. Saving an export reads the history, so that is where an unavailable provider surfaces.
+const PROVIDER_UNAVAILABLE = /references unavailable provider/i;
+const providerBlocked = (error: unknown) => PROVIDER_UNAVAILABLE.test(error instanceof Error ? error.message : String(error));
+const blockedReason = (provider: string) => `This chat uses the ${provider} provider, which is not enabled or not ready on this host, so Paseo cannot read its history and no export can be saved.`;
+
+// Whether the history can be read, which a saved export needs. `skippable` is true only when the provider is the blocker.
+async function exportBlocker(handle: ReturnType<Context["paseo"]["agents"]["ref"]>, agent: Agent): Promise<{ skippable: boolean; reason: string } | null> {
+  try {
+    const page = await handle.timeline.refetch({ direction: "tail", limit: 1, projection: "projected" });
+    if (!page.error) return null;
+    return providerBlocked(page.error) ? { skippable: true, reason: blockedReason(agent.provider) } : { skippable: false, reason: `Paseo could not read this chat's history: ${page.error}` };
+  } catch (error) {
+    return providerBlocked(error) ? { skippable: true, reason: blockedReason(agent.provider) }
+      : { skippable: false, reason: `Paseo could not read this chat's history: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 function requireInactive(agent: Agent) {
   if (agent.status === "running" || agent.status === "initializing" || agent.activeTurn) {
     throw new Error("Wait for this chat to finish or stop its turn before archiving. No chat was archived.");
@@ -128,21 +146,41 @@ export function createArchiveService(
     try { return await operation(); } finally { pending.delete(agentId); }
   }
   return {
-    archive: ({ agentId }: { agentId: string }, context: Context) => exclusive(agentId, async () => {
+    async check({ agentId }: { agentId: string }, context: Context) {
+      const handle = context.paseo.agents.ref(agentId);
+      const snapshot = await handle.refresh();
+      if (!snapshot?.agent) throw new Error("Chat was not found on this host.");
+      const blocker = await exportBlocker(handle, snapshot.agent);
+      return { canExport: !blocker, skippable: blocker?.skippable ?? false, reason: blocker?.reason ?? null };
+    },
+    archive: ({ agentId, skipExport = false }: { agentId: string; skipExport?: boolean }, context: Context) => exclusive(agentId, async () => {
       const handle = context.paseo.agents.ref(agentId);
       const snapshot = await handle.refresh();
       if (!snapshot?.agent) throw new Error("Chat was not found on this host.");
       if (snapshot.agent.archivedAt) throw new Error("This chat is already archived. Open Archived chats in the sidebar to restore it.");
       requireInactive(snapshot.agent);
-      const defaults = resolveDefaults(await readPreferences(), snapshot.agent.workspaceId ?? "");
-      if (defaults.destination === "clipboard") {
-        throw new Error("Archive needs a saved file. Choose a folder in Export and save it as a workspace or host default first. The chat is still active.");
+      let saved: Awaited<ReturnType<typeof saveSession>> | null = null;
+      if (skipExport) {
+        // Only for a chat whose history cannot be read because of its provider. Anything readable is exported first.
+        const blocker = await exportBlocker(handle, snapshot.agent);
+        if (!blocker) throw new Error("This chat's history can be read, so it was not archived without an export. Use Save export and archive.");
+        if (!blocker.skippable) throw new Error(`${blocker.reason} The chat was not archived.`);
+      } else {
+        const defaults = resolveDefaults(await readPreferences(), snapshot.agent.workspaceId ?? "");
+        if (defaults.destination === "clipboard") {
+          throw new Error("Archive needs a saved file. Choose a folder in Export and save it as a workspace or host default first. The chat is still active.");
+        }
+        try { saved = await saveSession({ agentId, ...defaults, destination: defaults.destination }, context); }
+        catch (error) {
+          if (providerBlocked(error)) throw new Error(`${blockedReason(snapshot.agent.provider)} The chat is still active. You can archive it without saving an export instead.`);
+          throw error;
+        }
       }
-      const saved = await saveSession({ agentId, ...defaults, destination: defaults.destination }, context);
+      const kept = saved ? `Export saved to ${saved.path}` : "No export was saved";
       let archivedAt: string;
       let workspaceId: string | null | undefined;
       try {
-        await rememberExport?.(saved.path, context);
+        if (saved) await rememberExport?.(saved.path, context);
         const latest = await handle.refresh();
         if (!latest?.agent) throw new Error("Chat is no longer available.");
         requireInactive(latest.agent);
@@ -151,13 +189,15 @@ export function createArchiveService(
         archivedAt = archived.archivedAt;
         workspaceId = latest.agent.workspaceId ?? snapshot.agent.workspaceId;
       } catch (error) {
-        throw new Error(`Export saved to ${saved.path}, but archiving did not complete: ${error instanceof Error ? error.message : String(error)} Check the chat's current state before retrying.`);
+        throw new Error(`${kept}, but archiving did not complete: ${error instanceof Error ? error.message : String(error)} Check the chat's current state before retrying.`);
       }
+      // Read while the workspace still exists: archiving it below takes its title away.
+      const title = saved?.title ?? (await readProjectTitle(workspaceId, context)) ?? cleanTitle(snapshot.agent.title) ?? "Paseo conversation";
       // The chat is archived from here on, so a workspace failure must not read as "chat still active".
       try {
-        return { ...saved, archivedAt, workspace: await archiveOwnWorkspace(agentId, workspaceId, context) };
+        return { path: saved?.path ?? null, entryCount: saved?.entryCount ?? null, title, archivedAt, workspace: await archiveOwnWorkspace(agentId, workspaceId, context) };
       } catch (error) {
-        throw new Error(`Export saved to ${saved.path} and the chat is archived, but its workspace was not archived: ${error instanceof Error ? error.message : String(error)} Archive that workspace from the sidebar.`);
+        throw new Error(`${kept} and the chat is archived, but its workspace was not archived: ${error instanceof Error ? error.message : String(error)} Archive that workspace from the sidebar.`);
       }
     }),
     async list(_input: Record<string, never>, context: Context) {
@@ -209,7 +249,12 @@ export function createArchiveService(
       if (snapshot.agent.archivedAt) {
         // reload invokes refresh_agent_request, which unarchives the chat. It restores the owning
         // workspace only for app versions before 0.1.105, which this client is not.
-        const restored = await handle.reload();
+        let restored: Awaited<ReturnType<typeof handle.reload>>;
+        try { restored = await handle.reload(); }
+        catch (error) {
+          if (providerBlocked(error)) throw new Error(`This chat uses the ${snapshot.agent.provider} provider, which is not enabled or not ready on this host, so Paseo cannot restore it. Enable that provider and try again, or open Saved export files to restore its export into a new chat.`);
+          throw error;
+        }
         if (!restored?.agent || restored.agent.archivedAt) throw new Error("Paseo did not restore this chat. Refresh the archive list and try again.");
       }
       // Do not reload an already-restored chat: that would interrupt a newly running turn.

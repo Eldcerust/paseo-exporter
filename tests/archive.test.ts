@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { createArchiveService } from "../server/archive";
 import { factoryDefaults, type Preferences } from "../shared/preferences";
-import { archiveSession, listArchives, restoreArchive } from "../shared/archive";
+import { archiveSession, checkArchive, listArchives, restoreArchive } from "../shared/archive";
 
 const archivedAt = "2026-11-10T07:00:00.000Z";
 async function fixture(t: TestContext) {
@@ -18,6 +18,8 @@ async function fixture(t: TestContext) {
     status: "idle", activeTurn: null as unknown, archivedAt: null as string | null,
   };
   const calls = { ref: [] as string[], refresh: 0, history: 0, archive: 0, reload: 0, workspaceArchive: 0, order: [] as string[] };
+  // Set to the daemon's refusal for a chat whose provider is switched off.
+  let historyError: string | null = null;
   // Paseo gives every chat its own workspace row, so the fixture models one plus any siblings.
   const workspace = { id: "workspace-1", name: "Coffee guide", title: "Coffee guide", workspaceKind: "local_checkout", archived: false };
   const others: Array<{ id: string; workspaceId: string; archivedAt: string | null; title: string }> = [];
@@ -38,7 +40,7 @@ async function fixture(t: TestContext) {
       return { agent: { ...agent }, epoch: "epoch", entries: [
         { seqStart: 1, seqEnd: 1, provider: "codex", timestamp: archivedAt, item: { type: "user_message", text: "Keep my chat" }, sourceSeqRanges: [], collapsed: [] },
         { seqStart: 2, seqEnd: 2, provider: "codex", timestamp: archivedAt, item: { type: "reasoning", text: "private thought" }, sourceSeqRanges: [], collapsed: [] },
-      ], hasOlder: false, error: null, gap: false, staleCursor: false, reset: false };
+      ], hasOlder: false, error: historyError, gap: false, staleCursor: false, reset: false };
     } },
   };
   const preferences: Preferences = {
@@ -56,7 +58,9 @@ async function fixture(t: TestContext) {
     },
     workspaces: { ref: (id: string) => { assert.equal(id, workspace.id); return workspaceHandle; } },
   } } as unknown as PluginHandlerContext;
-  return { directory, agent, calls, handle, workspace, workspaceHandle, others, listRequests, context, preferences, service: createArchiveService(async () => preferences) };
+  return { directory, agent, calls, handle, workspace, workspaceHandle, others, listRequests, context, preferences,
+    setHistoryError: (value: string | null) => { historyError = value; },
+    service: createArchiveService(async () => preferences) };
 }
 
 test("archive saves workspace defaults before soft-deleting the original session", async (t) => {
@@ -76,7 +80,7 @@ test("archive saves workspace defaults before soft-deleting the original session
     return { archivedAt };
   };
   const result = await f.service.archive({ agentId: "chat-1" }, f.context);
-  assert.ok(result.path.endsWith(".json"));
+  assert.ok(result.path?.endsWith(".json"));
   assert.equal(result.entryCount, 1);
   assert.equal(result.archivedAt, archivedAt);
   assert.equal(f.calls.archive, 1);
@@ -87,9 +91,11 @@ test("archive falls back to saved host defaults and supports the session folder"
   const f = await fixture(t);
   f.preferences.defaults.destination = "session";
   const result = await f.service.archive({ agentId: "chat-1" }, f.context);
-  assert.equal(result.path.startsWith(join(f.directory, "Paseo Exports")), true);
-  assert.match(await readFile(result.path, "utf8"), /Keep my chat/);
-  assert.match(await readFile(result.path, "utf8"), /private thought/);
+  const path = result.path;
+  assert.ok(path);
+  assert.equal(path.startsWith(join(f.directory, "Paseo Exports")), true);
+  assert.match(await readFile(path, "utf8"), /Keep my chat/);
+  assert.match(await readFile(path, "utf8"), /private thought/);
 });
 test("clipboard defaults never archive or fetch history", async (t) => {
   const f = await fixture(t);
@@ -98,6 +104,55 @@ test("clipboard defaults never archive or fetch history", async (t) => {
   assert.equal(f.calls.history, 0);
   assert.equal(f.calls.archive, 0);
   assert.deepEqual(await readdir(f.directory), []);
+});
+// Paseo archives a chat whose provider is switched off but refuses to serve its history, so an export cannot be
+// saved. Archiving must still be possible, because the chat is the user's to close.
+const providerError = "Agent chat-1 references unavailable provider 'opencode'";
+test("an unavailable provider refuses the export and offers archiving without one", async (t) => {
+  const f = await fixture(t);
+  f.setHistoryError(providerError);
+  await assert.rejects(f.service.archive({ agentId: "chat-1" }, f.context), /codex provider.*You can archive it without saving an export instead/s);
+  assert.equal(f.calls.archive, 0);
+  assert.equal(f.agent.archivedAt, null);
+  assert.deepEqual(await readdir(f.directory), [], "no partial or empty export is left behind");
+});
+test("archiving without an export saves no file but does archive the chat and its workspace", async (t) => {
+  const f = await fixture(t);
+  f.setHistoryError(providerError);
+  const result = await f.service.archive({ agentId: "chat-1", skipExport: true }, f.context);
+  assert.equal(result.path, null);
+  assert.equal(result.entryCount, null);
+  assert.equal(result.title, "Coffee guide", "the project title is still read while the workspace is live");
+  assert.deepEqual(archiveSession.output.parse(result), result);
+  assert.equal(f.calls.archive, 1);
+  assert.equal(f.workspace.archived, true);
+  assert.deepEqual(await readdir(f.directory), []);
+});
+test("archiving without an export is refused when the history can be read", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.service.archive({ agentId: "chat-1", skipExport: true }, f.context), /history can be read/);
+  assert.equal(f.calls.archive, 0);
+  assert.deepEqual(await readdir(f.directory), []);
+});
+test("a history failure that is not the provider still blocks archiving without an export", async (t) => {
+  const f = await fixture(t);
+  f.setHistoryError("Permission denied reading history");
+  await assert.rejects(f.service.archive({ agentId: "chat-1", skipExport: true }, f.context), /Permission denied/);
+  assert.equal(f.calls.archive, 0);
+});
+test("check reports whether an export can be saved and whether the provider is the only blocker", async (t) => {
+  const f = await fixture(t);
+  assert.deepEqual(await f.service.check({ agentId: "chat-1" }, f.context), { canExport: true, skippable: false, reason: null });
+  f.setHistoryError(providerError);
+  const blocked = await f.service.check({ agentId: "chat-1" }, f.context);
+  assert.equal(blocked.canExport, false);
+  assert.equal(blocked.skippable, true);
+  assert.match(blocked.reason!, /not enabled or not ready on this host/);
+  assert.deepEqual(checkArchive.output.parse(blocked), blocked);
+  f.setHistoryError("Permission denied reading history");
+  const other = await f.service.check({ agentId: "chat-1" }, f.context);
+  assert.deepEqual(other, { canExport: false, skippable: false, reason: "Paseo could not read this chat's history: Permission denied reading history" });
+  assert.equal(f.calls.archive, 0, "checking must never archive anything");
 });
 test("running, initializing, active-turn, and already-archived chats cannot be archived", async (t) => {
   const f = await fixture(t);
@@ -236,6 +291,13 @@ test("restore reports deleted sessions, provider errors, and unsuccessful unarch
   await assert.rejects(f.service.restore({ agentId: "chat-1" }, f.context), /persistence missing/);
   f.handle.reload = async () => ({ agent: { ...f.agent } });
   await assert.rejects(f.service.restore({ agentId: "chat-1" }, f.context), /did not restore/);
+});
+test("restore explains a chat whose provider is switched off and points at its saved export", async (t) => {
+  const f = await fixture(t);
+  f.agent.archivedAt = archivedAt;
+  f.handle.reload = async () => { throw new Error(providerError); };
+  await assert.rejects(f.service.restore({ agentId: "chat-1" }, f.context), /codex provider.*open Saved export files to restore its export into a new chat/s);
+  assert.equal(f.agent.archivedAt, archivedAt, "a refused restore leaves the chat archived");
 });
 test("full session: archives its own workspace after the chat", async (t) => {
   const f = await fixture(t);

@@ -35,6 +35,8 @@ Full export panel with workspace defaults:
 
 Archive saves the same Markdown or JSON file as Export before calling Paseo's native soft archive. A failed export leaves the chat active. Clipboard defaults are not accepted for Archive: save a folder destination first. If saving succeeds but native archive fails, the error includes the saved file path and the file is retained. Concurrent archive/restore requests for the same chat through this plugin are rejected until the first completes.
 
+**A chat whose provider is switched off can still be archived.** Paseo archives that chat but refuses to serve its history, and an export needs the history, so no file can be saved. The Archive confirmation checks this as soon as it opens: it says which provider is unavailable and offers **Archive without export** instead, which archives the chat and its workspace exactly as usual and saves no file. When the history cannot be read for any other reason, the confirmation says why and archiving stays blocked. Restoring such a chat natively is refused with an explanation; restore its export from **Saved export files** into a new chat instead.
+
 **Archives are named after the project, not the first prompt.** A chat's own title is usually still its first prompt, while the workspace row holds the title you see in the sidebar (a title plugin keeps it current). Archive, and every export, saves the project's current title as the export's title, its heading, and its file name, and keeps the chat's own title beside it (a `Chat title` row, or `chatTitle` in JSON). The title is read before the workspace is archived, because Paseo no longer returns a workspace's title once it is archived. A chat whose workspace has no title, or is already archived, keeps its own title. The Archive confirmation shows the title that was saved. Exports saved earlier keep the title they were saved with, and the **Paseo native archives** list shows the title from a chat's newest saved export when it has one.
 
 **Archive closes the whole session.** Paseo gives every chat its own workspace row in the sidebar, and archiving only the chat leaves that row behind. After the chat is archived, the plugin also archives the chat's own workspace, which closes that workspace's terminals. It does this only when it is safe: the workspace is kept, and the toast and receipt say why, when another chat is still active in it (Paseo's workspace archive would archive that chat too), when it is a Git worktree or any kind other than a plain folder (Paseo deletes the worktree folder when it archives one), or when it is already archived. If the workspace archive itself fails after the chat is archived, the error says so and includes the saved file path; archive that workspace from the sidebar. A plain folder is never deleted.
@@ -119,15 +121,15 @@ Source layout:
 - `server/history.ts`: complete history pagination and consistency checks.
 - `server/markdown.ts`: Markdown formatting and filename generation.
 - `server/export.ts`: JSON formatting, destination selection, and exclusive file writes.
-- `server/archive.ts`: native archive discovery, per-agent operation locks, export-before-archive, archiving the chat's own workspace when nothing else lives in it, and original-session restore.
+- `server/archive.ts`: native archive discovery, per-agent operation locks, export-before-archive, archiving without an export when the provider is unavailable, archiving the chat's own workspace when nothing else lives in it, and original-session restore.
 - `server/archive-files.ts`: bounded file reads, format validation, durable host-scoped path catalog, and file-to-context import.
 - `shared/export.ts`: validated RPC contracts.
 - `shared/archive.ts`: validated archive/list/restore contracts.
 - `shared/archive-files.ts`: file metadata, inspection/import contracts, and receipt schema.
 - `tests/export.test.ts`: pagination, format, filtering, error, destination, and save tests.
-- `tests/archive.test.ts`: archive ordering, saved defaults, workspace archive and keep rules, failure handling, concurrency, directory pagination, and restore tests.
+- `tests/archive.test.ts`: archive ordering, saved defaults, workspace archive and keep rules, archiving without an export, provider failures, concurrency, directory pagination, and restore tests.
 - `tests/archive-files.test.ts`: independent file restoration, catalog persistence, invalid inputs, concurrency, and source-file preservation.
-- `tests/export-ui.test.ts`: single-tool registration, inline archive placement in both popup hosts, confirmation, and error-state tests.
+- `tests/export-ui.test.ts`: single-tool registration, inline archive placement in both popup hosts, confirmation, archiving without an export, and error-state tests.
 
 GitHub Actions runs typechecking, all tests, and a package contents check on every push and pull request, using Node.js 22 and 24. The workflow can also be started manually.
 

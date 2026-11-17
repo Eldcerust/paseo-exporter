@@ -2,6 +2,13 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 const agentInput = z.object({ agentId: z.string().min(1) });
+// Whether a chat's history can be read, which saving an export needs. Paseo refuses to serve the history of a
+// chat whose provider is switched off, although it still archives that chat. `skippable` says the only blocker
+// is that provider, so archiving without an export is offered; any other reason is a plain refusal.
+export const checkArchive = defineRpc({
+  name: "session.archive.check", input: agentInput,
+  output: z.object({ canExport: z.boolean(), skippable: z.boolean(), reason: z.string().nullable() }),
+});
 // Paseo gives each chat its own workspace row in the sidebar. Archiving the chat alone leaves
 // that row behind, so archive also closes the workspace unless something else still lives in it.
 // `archived: false` is a deliberate outcome, and `note` says why the workspace was left in place.
@@ -15,9 +22,12 @@ export function workspaceSummary(workspace: ArchivedWorkspace) {
 }
 export const archiveSession = defineRpc({
   name: "session.archive",
-  input: agentInput,
-  // `title` is the name the export was saved under: the project's current title when it has one.
-  output: z.object({ path: z.string(), entryCount: z.number(), title: z.string(), archivedAt: z.string(), workspace: archivedWorkspace }),
+  // `skipExport` archives without saving a file. It is honoured only while the chat's history cannot be read
+  // because its provider is unavailable; for any chat whose history can be read the export always comes first.
+  input: agentInput.extend({ skipExport: z.boolean().optional() }),
+  // `title` is the name the export was saved under: the project's current title when it has one. `path` and
+  // `entryCount` are null when the archive was made without an export.
+  output: z.object({ path: z.string().nullable(), entryCount: z.number().nullable(), title: z.string(), archivedAt: z.string(), workspace: archivedWorkspace }),
 });
 export const archivedConversation = z.object({
   id: z.string(), title: z.string().nullable(), provider: z.string(), model: z.string().nullable(),
