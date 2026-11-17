@@ -7,6 +7,7 @@ import * as archiveContracts from "../shared/archive";
 import * as settings from "../shared/preferences";
 import * as fileContracts from "../shared/archive-files";
 import * as searchContracts from "../shared/search";
+import * as modelContracts from "../shared/models";
 
 // Execute the real TSX with small host-boundary mocks, without loading React Native in Node.
 type Props = Record<string, any>;
@@ -263,7 +264,7 @@ test("a saved export can be inspected and restored through the file-import RPC i
       throw new Error("File restoration must not call native unarchive");
     } },
     "@tanstack/react-query": {
-      useQuery: () => ({ data: { entries: [file], warnings: [] } }),
+      useQuery: (config: Props) => ({ data: config.queryKey[0] === "archive-models" ? { discovering: false, providers: [{ id: "opencode", label: "OpenCode", models: [{ id: "test", label: "Test", isDefault: true, efforts: [] }] }] } : { entries: [file], warnings: [] } }),
       useMutation: (config: Props) => {
         const index = mutationIndex++;
         const mutation = mutations[index] ??= { isPending: false, isSuccess: false };
@@ -276,7 +277,8 @@ test("a saved export can be inspected and restored through the file-import RPC i
         return mutation;
       },
     },
-    "../shared/archive-files": fileContracts, "../shared/search": searchContracts, "./search-results": searchResults,
+    "../shared/archive-files": fileContracts, "../shared/models": modelContracts, "../shared/search": searchContracts, "./search-results": searchResults,
+    "./model-picker": { ModelPicker: () => null },
   });
   function render() {
     stateIndex = mutationIndex = 0;
@@ -295,7 +297,7 @@ test("a saved export can be inspected and restored through the file-import RPC i
   assert.ok(requestId);
   assert.deepEqual(requests, [
     { method: "archive.files.inspect", input: { path: file.path } },
-    { method: "archive.files.import", input: { path: file.path, provider: file.provider, cwd: file.cwd, requestId } },
+    { method: "archive.files.import", input: { path: file.path, provider: "opencode", model: "test", cwd: file.cwd, requestId } },
   ]);
   assert.deepEqual(opened, [{ agentId: "new-context-chat" }]);
 });
@@ -383,8 +385,8 @@ async function searchScreen(kind: "files" | "native", { list, search, debounce =
       useQuery: (config: Props) => { configs.push(config); return { data: /search/.test(String(config.queryKey[0])) ? (typeof search === "function" ? search(config.queryKey[2]) : search) : list, isFetching: false, refetch: async () => {} }; },
       useMutation: () => ({ isPending: false, isSuccess: false, mutate() {}, reset() {} }),
     },
-    "../shared/archive": archiveContracts, "../shared/archive-files": fileContracts, "../shared/search": searchContracts,
-    "./search-results": { useDebounced: debounce, Snippet: (props: Props) => jsx("Snippet", props) },
+    "../shared/archive": archiveContracts, "../shared/archive-files": fileContracts, "../shared/search": searchContracts, "../shared/models": modelContracts,
+    "./search-results": { useDebounced: debounce, Snippet: (props: Props) => jsx("Snippet", props) }, "./model-picker": { ModelPicker: () => null },
     "./archive-files-screen": { ArchiveFilesScreen: () => null },
   });
   const label = kind === "files" ? "Search saved exports" : "Search archived chats";
@@ -511,4 +513,212 @@ test("search ui: the snippet highlights matches and the debounce settles after a
   cleanups.at(-1)!();
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(hook("abc"), "ab", "typing on cancels the earlier pending update");
+});
+
+// ---- The provider/model picker in "Restore from file" ----
+// Stands in for the picker element so the screen's choices can be read from its props.
+const pickerStub = { ModelPicker: (props: Props) => jsx("ModelPicker", props) };
+const claudeAndPi = { discovering: false, providers: [
+  { id: "claude", label: "Claude", models: [
+    { id: "claude-opus-5-5", label: "Opus 5.5", isDefault: true, efforts: [{ id: "high", label: "High", isDefault: false }] },
+    { id: "claude-sonnet-5-5", label: "Sonnet 5.5", isDefault: false, efforts: [] },
+  ] },
+  { id: "pi", label: "Pi", models: [{ id: "deepseek/deepseek-flash", label: "DeepSeek V4.1 Flash", isDefault: true, efforts: [] }] },
+] };
+async function restoreScreen({ provider, catalog, cwd = "C:\\project" }: { provider: string; catalog: Props | undefined; cwd?: string }) {
+  const states: unknown[] = [];
+  const mutations: Props[] = [];
+  const requests: { method: string; input: Props }[] = [];
+  const configs: Props[] = [];
+  let stateIndex = 0;
+  let mutationIndex = 0;
+  const file = { path: "C:\\exports\\saved.json", title: "File-only chat", format: "json", provider, cwd, entryCount: 2, bytes: 200, sourceAgentId: "deleted-original", exportedAt: "now" };
+  const module = await loadClient("client/archive-files-screen.tsx", {
+    react: { useState: (initial: unknown) => {
+      const index = stateIndex++;
+      if (!(index in states)) states[index] = initial;
+      return [states[index], (value: unknown) => { states[index] = value; }];
+    } },
+    "react-native": { Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View" },
+    "@getpaseo/plugin/client/ui": { Markdown: "Markdown", TextInput: "TextInput" },
+    "@getpaseo/plugin/client": { useRpc: (contract: Props) => async (input: Props) => {
+      requests.push({ method: contract.name, input });
+      if (contract.name === "archive.files.inspect") return { file, content: "saved conversation" };
+      if (contract.name === "archive.files.import") return { agentId: "new-context-chat", mode: "context", path: file.path };
+      throw new Error(`Unexpected call ${contract.name}`);
+    } },
+    "@tanstack/react-query": {
+      useQuery: (config: Props) => { configs.push(config); return { data: config.queryKey[0] === "archive-models" ? catalog : { entries: [file], warnings: [] }, isPending: false, refetch: async () => {} }; },
+      useMutation: (config: Props) => {
+        const index = mutationIndex++;
+        const mutation = mutations[index] ??= { isPending: false, isSuccess: false };
+        mutation.reset = () => { delete mutation.data; delete mutation.error; mutation.isSuccess = false; };
+        mutation.mutate = async (input: unknown) => {
+          mutation.data = await config.mutationFn(input);
+          mutation.isSuccess = true;
+          await config.onSuccess?.(mutation.data);
+        };
+        return mutation;
+      },
+    },
+    "../shared/archive-files": fileContracts, "../shared/models": modelContracts, "../shared/search": searchContracts,
+    "./search-results": searchResults, "./model-picker": pickerStub,
+  });
+  function render() {
+    stateIndex = mutationIndex = 0;
+    configs.length = 0;
+    return expand(module.ArchiveFilesScreen({ theme: { colors: {} }, host: { id: "host", label: "Test" }, layout: { compact: true }, navigation: undefined }));
+  }
+  const find = (tree: unknown, label: string) => elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === label)?.props;
+  const picker = (tree: unknown) => elements(tree).find((entry) => entry.type === "ModelPicker")?.props;
+  return { render, find, picker, requests, configs, file };
+}
+
+test("model picker ui: there is no picker, and no text box for the provider, until a file is selected", async () => {
+  const screen = await restoreScreen({ provider: "claude/claude-opus-5-5", catalog: claudeAndPi });
+  const tree = screen.render();
+  assert.equal(screen.picker(tree), undefined);
+  assert.equal(elements(tree).some((entry) => /provider\/model/i.test(String(entry.props.accessibilityLabel ?? "")) || /^provider\/model$/.test(String(entry.props.placeholder ?? ""))), false, "the old free-text provider/model box is gone");
+});
+
+test("model picker ui: the exported model is preselected and restoring sends provider, model, and effort separately", async () => {
+  const screen = await restoreScreen({ provider: "claude/claude-opus-5-5", catalog: claudeAndPi });
+  await screen.find(screen.render(), "Select export: File-only chat")!.onPress();
+  let tree = screen.render();
+  let picker = screen.picker(tree)!;
+  assert.deepEqual(picker.selection, { provider: "claude", model: "claude-opus-5-5" });
+  assert.equal(picker.note, null, "nothing was substituted");
+  assert.deepEqual(picker.original, { provider: "claude", model: "claude-opus-5-5" });
+  assert.deepEqual(picker.providers.map((provider: Props) => provider.id), ["claude", "pi"]);
+  assert.equal(screen.find(tree, "Restore from file")!.disabled, false);
+  const models = screen.configs.find((config) => config.queryKey[0] === "archive-models")!;
+  assert.deepEqual(models.queryKey, ["archive-models", "host", "C:\\project"]);
+  assert.equal(models.enabled, true);
+  assert.equal(models.refetchInterval({ state: { data: { discovering: true } } }), 1000, "it asks again while the host is still scanning");
+  assert.equal(models.refetchInterval({ state: { data: { discovering: false } } }), false);
+
+  picker.onChange({ provider: "claude", model: "claude-opus-5-5", effort: "high" });
+  await screen.find(screen.render(), "Restore from file")!.onPress();
+  const sent = screen.requests.find((request) => request.method === "archive.files.import")!.input;
+  assert.deepEqual({ ...sent, requestId: "x" }, { path: screen.file.path, provider: "claude", model: "claude-opus-5-5", thinkingOptionId: "high", cwd: "C:\\project", requestId: "x" });
+  picker = screen.picker(screen.render())!;
+  assert.equal(picker.disabled, false);
+});
+
+test("model picker ui: a disabled exported provider is replaced by an available one, with the reason shown", async () => {
+  const screen = await restoreScreen({ provider: "opencode/opencode-go/deepseek-v4.1-flash", catalog: claudeAndPi });
+  await screen.find(screen.render(), "Select export: File-only chat")!.onPress();
+  const tree = screen.render();
+  const picker = screen.picker(tree)!;
+  assert.deepEqual(picker.selection, { provider: "claude", model: "claude-opus-5-5" }, "the first available provider's default model");
+  assert.match(picker.note, /exported with opencode\/opencode-go\/deepseek-v4\.1-flash, which is not enabled or not ready on this host\. Claude · Opus 5\.5 is selected instead/);
+  await screen.find(tree, "Restore from file")!.onPress();
+  const sent = screen.requests.find((request) => request.method === "archive.files.import")!.input;
+  assert.deepEqual([sent.provider, sent.model], ["claude", "claude-opus-5-5"], "the disabled provider is never sent");
+});
+
+test("model picker ui: a choice replaces the preselection and clears the note", async () => {
+  const screen = await restoreScreen({ provider: "opencode/x", catalog: claudeAndPi });
+  await screen.find(screen.render(), "Select export: File-only chat")!.onPress();
+  screen.picker(screen.render())!.onChange({ provider: "pi", model: "deepseek/deepseek-flash" });
+  const picker = screen.picker(screen.render())!;
+  assert.deepEqual(picker.selection, { provider: "pi", model: "deepseek/deepseek-flash" });
+  assert.equal(picker.note, null);
+  await screen.find(screen.render(), "Restore from file")!.onPress();
+  const sent = screen.requests.find((request) => request.method === "archive.files.import")!.input;
+  assert.deepEqual([sent.provider, sent.model, "thinkingOptionId" in sent], ["pi", "deepseek/deepseek-flash", false]);
+});
+
+test("model picker ui: restoring is not possible until the host has offered a model", async () => {
+  for (const catalog of [undefined, { discovering: true, providers: [] }, { discovering: false, providers: [] }]) {
+    const screen = await restoreScreen({ provider: "claude/claude-opus-5-5", catalog });
+    await screen.find(screen.render(), "Select export: File-only chat")!.onPress();
+    const tree = screen.render();
+    assert.equal(screen.picker(tree)!.selection, null);
+    assert.equal(screen.find(tree, "Restore from file")!.disabled, true, JSON.stringify(catalog));
+  }
+  const relative = await restoreScreen({ provider: "claude/x", catalog: claudeAndPi, cwd: "relative/folder" });
+  await relative.find(relative.render(), "Select export: File-only chat")!.onPress();
+  relative.render();
+  assert.equal(relative.configs.find((config) => config.queryKey[0] === "archive-models")!.enabled, false, "the host is not asked about a folder that is not an absolute path");
+});
+
+test("model picker ui: the picker lists providers with counts, the exported model, and a capped, searchable list", async () => {
+  const states: unknown[] = [];
+  let stateIndex = 0;
+  const module = await loadClient("client/model-picker.tsx", {
+    react: { useState: (initial: unknown) => {
+      const index = stateIndex++;
+      if (!(index in states)) states[index] = initial;
+      return [states[index], (value: unknown) => { states[index] = value; }];
+    } },
+    "react-native": { Pressable: "Pressable", Text: "Text", View: "View" },
+    "@getpaseo/plugin/client/ui": { TextInput: "TextInput" },
+    "../shared/models": modelContracts,
+  });
+  const many = { id: "pi", label: "Pi", models: Array.from({ length: 20 }, (_, i) => ({ id: `up/m${i}`, label: `Model ${i}`, isDefault: i === 0, efforts: i === 15 ? [{ id: "high", label: "High", isDefault: false }] : [] })) };
+  const claude = { id: "claude", label: "Claude", models: [{ id: "opus", label: "Opus", isDefault: true, efforts: [] }] };
+  const changes: unknown[] = [];
+  let selection: Props | null = { provider: "pi", model: "up/m0" };
+  const render = (overrides: Props = {}) => {
+    stateIndex = 0;
+    return expand(module.ModelPicker({ providers: [claude, many], loading: false, onRetry() {}, original: { provider: "pi", model: "up/m3" }, selection, note: null, onChange: (value: unknown) => changes.push(value), theme: { colors: {} }, ...overrides }));
+  };
+  const labels = (tree: unknown) => elements(tree).filter((entry) => entry.type === "Pressable").map((entry) => String(entry.props.accessibilityLabel));
+  const words = (tree: unknown) => elements(tree).filter((entry) => entry.type === "Text").map((entry) => [entry.props.children].flat(3).join("")).join("\n");
+  const press = (tree: unknown, label: string) => elements(tree).find((entry) => entry.type === "Pressable" && entry.props.accessibilityLabel === label)!.props.onPress();
+
+  let tree = render();
+  assert.deepEqual(labels(tree).slice(0, 2), ["Claude, 1 model", "Pi, 20 models"], "providers are listed with their model counts");
+  const listed = labels(tree).filter((label) => label.startsWith("up/Model"));
+  assert.equal(listed.length, 8, "a few models at a time, with no scroll area of its own");
+  assert.ok(listed.includes("up/Model 3 (exported with this)"), "the model the chat was exported with is marked");
+  assert.match(words(tree), /\+12 more\. Search to narrow\./);
+  assert.match(words(tree), /The restored chat will use Pi · up\/Model 0\./);
+
+  press(tree, "up/Model 3 (exported with this)");
+  assert.deepEqual(changes.pop(), { provider: "pi", model: "up/m3" });
+  press(tree, "Claude, 1 model");
+  tree = render();
+  assert.deepEqual(labels(tree).filter((label) => /^(Opus|up\/)/.test(label)), ["Opus"], "choosing a provider shows its models");
+
+  selection = { provider: "pi", model: "up/m15" };
+  states.length = 0;
+  tree = render();
+  assert.ok(labels(tree).includes("up/Model 15"), "a selected model beyond the first few is still shown");
+  assert.ok(labels(tree).includes("Effort: Provider default") && labels(tree).includes("Effort: High"), "effort choices appear when the model has them");
+  press(tree, "Effort: High");
+  assert.deepEqual(changes.pop(), { provider: "pi", model: "up/m15", effort: "high" });
+  press(tree, "Effort: Provider default");
+  assert.deepEqual(changes.pop(), { provider: "pi", model: "up/m15" });
+
+  const box = elements(tree).find((entry) => entry.type === "TextInput")!;
+  box.props.onChangeText("model 1");
+  tree = render();
+  const found = labels(tree).filter((label) => label.startsWith("up/Model"));
+  assert.ok(found.length > 0 && found.every((label) => /Model 1/.test(label)), "searching narrows to matching models");
+  box.props.onChangeText("zzzz");
+  assert.match(words(render()), /No models match “zzzz”\./);
+});
+
+test("model picker ui: loading, empty, error, and disabled states say what is happening", async () => {
+  const module = await loadClient("client/model-picker.tsx", {
+    react: { useState: (initial: unknown) => [initial, () => {}] },
+    "react-native": { Pressable: "Pressable", Text: "Text", View: "View" },
+    "@getpaseo/plugin/client/ui": { TextInput: "TextInput" },
+    "../shared/models": modelContracts,
+  });
+  const base = { providers: [], loading: false, onRetry() {}, original: { provider: "claude", model: null }, selection: null, note: null, onChange() {}, theme: { colors: {} } };
+  const words = (tree: unknown) => elements(tree).filter((entry) => entry.type === "Text").map((entry) => [entry.props.children].flat(3).join("")).join("\n");
+  assert.match(words(expand(module.ModelPicker({ ...base, loading: true }))), /Loading providers…/);
+  assert.match(words(expand(module.ModelPicker({ ...base }))), /No enabled, available models were reported for this folder\./);
+  let retried = 0;
+  const failed = expand(module.ModelPicker({ ...base, error: "Could not reach the host", onRetry: () => { retried++; } }));
+  assert.ok(elements(failed).some((entry) => entry.props.accessibilityRole === "alert" && entry.props.children === "Could not reach the host"));
+  elements(failed).find((entry) => entry.props.accessibilityLabel === "Retry loading providers")!.props.onPress();
+  assert.equal(retried, 1);
+  const note = expand(module.ModelPicker({ ...base, providers: [{ id: "pi", label: "Pi", models: [{ id: "m", label: "M", isDefault: true, efforts: [] }] }], selection: { provider: "pi", model: "m" }, note: "Substituted because X", disabled: true }));
+  assert.match(words(note), /Substituted because X/);
+  assert.ok(elements(note).filter((entry) => entry.type === "Pressable").every((entry) => entry.props.disabled === true), "everything is disabled while a restore runs");
+  assert.equal(elements(note).find((entry) => entry.type === "TextInput")!.props.editable, false);
 });

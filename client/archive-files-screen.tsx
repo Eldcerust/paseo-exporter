@@ -3,8 +3,10 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { type PluginScreenProps, useRpc } from "@getpaseo/plugin/client";
 import { Markdown, TextInput } from "@getpaseo/plugin/client/ui";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { importArchiveFile, inspectArchiveFile, listArchiveFiles, searchArchiveFiles } from "../shared/archive-files";
+import { importArchiveFile, inspectArchiveFile, listArchiveFiles, listArchiveModels, searchArchiveFiles } from "../shared/archive-files";
+import { pickInitial, splitSelection, validSelection, type ModelSelection } from "../shared/models";
 import { searchMatches } from "../shared/search";
+import { ModelPicker } from "./model-picker";
 import { Snippet, useDebounced } from "./search-results";
 
 export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginScreenProps) {
@@ -12,11 +14,13 @@ export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginSc
   const inspect = useRpc(inspectArchiveFile);
   const restore = useRpc(importArchiveFile);
   const searchText = useRpc(searchArchiveFiles);
+  const listModels = useRpc(listArchiveModels);
   const [search, setSearch] = useState("");
   const [directory, setDirectory] = useState("");
   const [scanDirectory, setScanDirectory] = useState("");
   const [path, setPath] = useState("");
-  const [provider, setProvider] = useState("");
+  // The model the person picked. Null until they pick one: the picker then shows the exported model, or the closest available.
+  const [picked, setPicked] = useState<ModelSelection | null>(null);
   const [cwd, setCwd] = useState("");
   const [preview, setPreview] = useState(false);
   const [requestId, setRequestId] = useState("");
@@ -24,14 +28,26 @@ export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginSc
   const importing = useMutation({
     mutationFn: () => {
       if (!selected.data) throw new Error("Select an export file first.");
-      return restore({ path: selected.data.file.path, provider, cwd, requestId });
+      if (!choice) throw new Error("Choose a provider and model first.");
+      return restore({ path: selected.data.file.path, provider: choice.provider, model: choice.model, ...(choice.effort ? { thinkingOptionId: choice.effort } : {}), cwd, requestId });
     },
     onSuccess: ({ agentId }) => navigation?.openAgent({ agentId }),
   });
   const selected = useMutation({
     mutationFn: (filePath: string) => inspect({ path: filePath }),
-    onSuccess: ({ file }) => { setPath(file.path); setProvider(file.provider); setCwd(file.cwd); setPreview(false); setRequestId(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`); importing.reset(); },
+    onSuccess: ({ file }) => { setPath(file.path); setPicked(null); setCwd(file.cwd); setPreview(false); setRequestId(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`); importing.reset(); },
   });
+  // The providers the host offers for the working folder (it scans them per folder, so a first answer can be partial).
+  const original = selected.data ? splitSelection(selected.data.file.provider) : null;
+  const settledCwd = useDebounced(cwd.trim());
+  const models = useQuery({
+    queryKey: ["archive-models", host.id, settledCwd], queryFn: () => listModels({ cwd: settledCwd }), staleTime: 0,
+    enabled: !!selected.data && /^([A-Za-z]:[\\/]|[\\/])/.test(settledCwd),
+    refetchInterval: (query) => (query.state.data?.discovering ? 1000 : false),
+  });
+  const providers = models.data?.providers ?? [];
+  const automatic = original ? pickInitial(providers, original) : null;
+  const choice = validSelection(providers, picked) ?? automatic?.selection ?? null;
   const busy = selected.isPending || importing.isPending;
   const colors = theme.colors;
   const text = { color: colors.foreground };
@@ -76,11 +92,12 @@ export function ArchiveFilesScreen({ theme, host, layout, navigation }: PluginSc
       <Text selectable style={muted}>{selected.data.file.path}</Text>
       <Text style={muted}>{selected.data.file.entryCount} entries · {selected.data.file.format} · {selected.data.file.bytes} bytes</Text>
       <Text style={text}>Choose the provider/model and working folder for the restored chat.</Text>
-      {input("Provider/model for restored chat", provider, setProvider, "provider/model")}
       {input("Working directory for restored chat", cwd, setCwd, "Existing absolute folder on this host")}
+      <ModelPicker providers={providers} loading={models.isPending || !!models.data?.discovering} error={models.error ? models.error.message : undefined} onRetry={() => void models.refetch()}
+        original={original!} selection={choice} note={validSelection(providers, picked) ? null : automatic?.note ?? null} onChange={setPicked} disabled={busy} theme={theme} />
       <Text style={muted}>The file remains unchanged. Only content included in the export can be restored. Imports over 1 MiB are rejected rather than truncated; the provider’s context limits also apply.</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {button(importing.isPending ? "Creating restored chat…" : "Restore from file", () => importing.mutate(), busy || !provider.trim() || !cwd.trim() || importing.isSuccess, true)}
+        {button(importing.isPending ? "Creating restored chat…" : "Restore from file", () => importing.mutate(), busy || !choice || !cwd.trim() || importing.isSuccess, true)}
         {button(preview ? "Hide file preview" : "Preview file", () => setPreview(!preview))}
         {button("Cancel selection", () => { selected.reset(); importing.reset(); })}
       </View>

@@ -7,7 +7,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { createArchiveFiles, MAX_IMPORT_BYTES, parseArchive, readArchive } from "../server/archive-files";
 import { renderMarkdown } from "../server/markdown";
 import { factoryDefaults, type Preferences } from "../shared/preferences";
-import { archiveFile, importArchiveFile } from "../shared/archive-files";
+import { archiveFile, importArchiveFile, listArchiveModels } from "../shared/archive-files";
+import { compactSnapshot } from "./catalog-fixture";
 
 const options = { includeReasoning: true, includeTools: true, includeTimestamps: true };
 function sample(cwd: string) {
@@ -35,13 +36,21 @@ async function fixture(t: TestContext) {
   // import makes a workspace first. A workspace's chats are created in the folder it was made for.
   const workspaceCalls = { created: [] as Array<{ source: { path: string; projectId?: string }; title: string }>, archived: [] as string[] };
   const projects = [{ id: "workspace-default", projectId: "project-1", projectRootPath: home }];
+  // The host's provider catalog. Each read takes the next snapshot, and the last one repeats.
+  const catalog = { snapshots: [compactSnapshot()] as unknown[], calls: [] as unknown[] };
   const context = {
     paseo: {
       hosts: { list: async () => ({ self: { serverId: "test-host" } }) },
       agents: {
         ref: () => { throw new Error("Must not depend on the original Paseo record"); },
-        create: async (input: unknown) => { created.push(input); return { id: "new-restored-chat" }; },
+        create: async (input: { config: { provider: string } }) => {
+          // The real SDK refuses a provider that is not `provider/model`.
+          if (!/^[^/]+\/.+/.test(input.config.provider)) throw new Error('Expected config.provider in "provider/model" format');
+          created.push(input);
+          return { id: "new-restored-chat" };
+        },
       },
+      providers: { snapshot: async (input: unknown) => { catalog.calls.push(input); return catalog.snapshots.length > 1 ? catalog.snapshots.shift() : catalog.snapshots[0]; } },
       workspaces: {
         list: async () => ({ entries: projects }),
         create: async (input: { source: { path: string; projectId?: string }; title: string }) => {
@@ -56,8 +65,8 @@ async function fixture(t: TestContext) {
       },
     },
   } as unknown as PluginHandlerContext;
-  const service = () => createArchiveFiles(async () => prefs, { home });
-  return { home, folder, path: await resolvePath(path), value, content, prefs, created, context, service, workspaceCalls, projects };
+  const service = () => createArchiveFiles(async () => prefs, { home, catalogTiming: { intervalMs: 0, sleep: async () => {} } });
+  return { home, folder, path: await resolvePath(path), value, content, prefs, created, context, service, workspaceCalls, projects, catalog };
 }
 // Canonical path comparisons also work when the Windows temp root contains a junction.
 async function resolvePath(path: string) { const { realpath } = await import("node:fs/promises"); return realpath(path); }
@@ -101,6 +110,8 @@ test("restore from JSON creates a new idle chat with complete context and never 
   assert.deepEqual(result, { agentId: "new-restored-chat", mode: "context", path: f.path });
   const created = f.created[0] as { config: { provider: string; systemPrompt: string }; prompt?: string; cwd: string; idempotencyKey: string };
   assert.equal(created.config.provider, "opencode/openai/new-model");
+  assert.equal((created.config as { model?: string }).model, undefined, "the text form is used as given, with no model field");
+  assert.deepEqual(f.catalog.calls, [], "and the host's catalog is not consulted");
   assert.equal(created.cwd, f.home);
   assert.equal(created.prompt, undefined, "import must not automatically run the archived task");
   assert.ok(created.config.systemPrompt.includes(f.content), "the file must be embedded, not just referenced by path");
@@ -152,6 +163,55 @@ test("a retried restore does not leave an extra workspace behind", async (t) => 
   f.context.paseo.agents.create = async () => ({ id: "fresh-chat", refresh: async () => ({ agent: { workspaceId: "workspace-new-2" } }) }) as never;
   await service.import({ path: f.path, provider: "opencode/test", cwd: f.home, requestId: "other" }, f.context);
   assert.deepEqual(f.workspaceCalls.archived, ["workspace-new-1"], "a chat in the workspace just made keeps it");
+});
+test("the model picker lists only what the host offers for the folder, and says while it is still scanning", async (t) => {
+  const f = await fixture(t);
+  const service = f.service();
+  const listed = await service.models({ cwd: f.home }, f.context);
+  assert.deepEqual(listed.providers.map((provider) => provider.id), ["claude", "pi"], "disabled and unready providers are not offered");
+  assert.equal(listed.discovering, false);
+  assert.deepEqual(f.catalog.calls, [{ cwd: f.home }], "the folder is what the host scans");
+  assert.deepEqual(listArchiveModels.output.parse(listed), listed);
+  f.catalog.snapshots = [compactSnapshot({ claudeStatus: "loading" })];
+  const scanning = await service.models({ cwd: f.home }, f.context);
+  assert.deepEqual([scanning.discovering, scanning.providers.map((provider) => provider.id)], [true, ["pi"]], "a provider still loading is reported, not offered");
+  await assert.rejects(service.models({ cwd: "relative" }, f.context), /absolute/);
+});
+test("a chosen model is sent the way the SDK expects, after the host confirms it", async (t) => {
+  const f = await fixture(t);
+  const result = await f.service().import({ path: f.path, provider: "claude", model: "claude-opus-5-5", thinkingOptionId: "high", cwd: f.home }, f.context);
+  assert.equal(result.agentId, "new-restored-chat");
+  const config = (f.created[0] as { config: { provider: string; model?: string; thinkingOptionId?: string; systemPrompt: string } }).config;
+  assert.deepEqual([config.provider, config.model, config.thinkingOptionId], ["claude/claude-opus-5-5", undefined, "high"], "the SDK takes provider/model as one text, and the effort as its own field");
+  assert.ok(config.systemPrompt.includes(f.content), "the conversation is still embedded");
+  assert.deepEqual(f.catalog.calls, [{ cwd: f.home }]);
+  // No effort chosen: none is sent, so the provider's own default applies.
+  await f.service().import({ path: f.path, provider: "pi", model: "deepseek/deepseek-flash", cwd: f.home, requestId: "second" }, f.context);
+  const second = (f.created[1] as { config: Record<string, unknown> }).config;
+  assert.deepEqual([second.provider, "model" in second, "thinkingOptionId" in second], ["pi/deepseek/deepseek-flash", false, false], "a slash-style model id stays whole after the provider");
+  // The model and effort are part of the retry key: the same attempt with another model is a different chat.
+  await f.service().import({ path: f.path, provider: "pi", model: "deepseek/deepseek-v4-pro", cwd: f.home, requestId: "second" }, f.context);
+  assert.notEqual((f.created[1] as { idempotencyKey: string }).idempotencyKey, (f.created[2] as { idempotencyKey: string }).idempotencyKey);
+});
+test("a provider that is disabled, unready, or missing the model is refused before anything is created", async (t) => {
+  const f = await fixture(t);
+  const service = f.service();
+  const attempts: Array<[Parameters<typeof service.import>[0], RegExp]> = [
+    [{ path: f.path, provider: "opencode", model: "opencode-go/deepseek-v4.1-flash", cwd: f.home }, /opencode provider is not enabled or not ready on this host, so the chat was not restored/],
+    [{ path: f.path, provider: "codex", model: "gpt", cwd: f.home }, /codex provider is not enabled or not ready/],
+    [{ path: f.path, provider: "claude", model: "claude-opus-4", cwd: f.home }, /Claude does not offer a model called claude-opus-4/],
+    [{ path: f.path, provider: "claude", model: "claude-opus-5-5", thinkingOptionId: "extreme", cwd: f.home }, /no effort level called extreme/],
+  ];
+  for (const [input, message] of attempts) await assert.rejects(service.import(input, f.context), message);
+  assert.deepEqual(f.created, [], "no chat was created");
+  assert.deepEqual(f.workspaceCalls.created, [], "and no workspace either");
+});
+test("restoring waits for the host to finish discovering the chosen provider", async (t) => {
+  const f = await fixture(t);
+  f.catalog.snapshots = [compactSnapshot({ claudeStatus: "loading" }), compactSnapshot({ claudeStatus: "loading" }), compactSnapshot()];
+  const result = await f.service().import({ path: f.path, provider: "claude", model: "claude-sonnet-5-5", cwd: f.home }, f.context);
+  assert.equal(result.agentId, "new-restored-chat");
+  assert.equal(f.catalog.calls.length, 3, "it read again until the provider was ready");
 });
 test("Markdown file restoration also loads the actual saved text without the original chat", async (t) => {
   const f = await fixture(t);
